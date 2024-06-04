@@ -8,3 +8,4 @@ numpy
 websockets
 scipy
 aiohttp
+sounddevice

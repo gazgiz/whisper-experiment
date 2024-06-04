@@ -6,6 +6,8 @@ import numpy as np
 import uuid
 import json
 import asyncio
+from scipy.io.wavfile import write as write_wav
+import os
 
 app = FastAPI()
 
@@ -63,6 +65,12 @@ async def process_audio_chunk(websocket, data):
         # Convert the received audio data to numpy array
         audio_data = np.frombuffer(data, dtype=np.int16)
         audio_data = audio_data.astype(np.float32) / 32768.0
+        
+        # Save the received audio data to a file for validation
+        #sample_rate = 16000  # Assuming the sample rate is 16000 Hz
+        #filename = f"received_audio_{uuid.uuid4()}.wav"
+        #write_wav(filename, sample_rate, audio_data)
+        #print(f"Audio saved to {filename}")
 
         # Perform the transcription
         result = model.transcribe(audio_data)
