@@ -9,3 +9,4 @@ websockets
 scipy
 aiohttp
 sounddevice
+TTS
