@@ -1,0 +1,10 @@
+fastapi
+fastapi-cors
+uvicorn
+git+https://github.com/openai/whisper.git
+torch
+torchaudio
+numpy
+websockets
+scipy
+aiohttp

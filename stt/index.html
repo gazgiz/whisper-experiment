@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Transcription</title>
+    <style>
+        #transcription {
+            border: 1px solid #ccc;
+            padding: 10px;
+            width: 500px;
+            height: 200px;
+            overflow-y: auto;
+            white-space: pre-wrap; /* Preserve whitespace and line breaks */
+        }
+    </style>
+</head>
+<body>
+    <h1>Transcription Service</h1>
+    <button onclick="startTranscription()">Start Transcription</button>
+    <div id="job-id"></div>
+    <div id="transcription"></div>
+    <button onclick="startRecording()">Start Recording</button>
+    <button onclick="stopRecording()">Stop Recording</button>
+    <script>
+        let ws;
+        let jobId;
+        let mediaRecorder;
+        let audioChunks = [];
+
+        function startTranscription() {
+            console.log("Starting transcription...");
+            ws = new WebSocket('ws://localhost:8000/ws');
+            ws.onopen = function(event) {
+                console.log("WebSocket connection opened");
+                ws.send(JSON.stringify({action: 'start_transcription'}));
+            };
+            ws.onmessage = function(event) {
+                console.log("WebSocket message received:", event.data);
+                const data = JSON.parse(event.data);
+                if (data.job_id) {
+                    jobId = data.job_id;
+                    document.getElementById('job-id').innerText = 'Job ID: ' + data.job_id;
+                } else if (data.transcript !== undefined) {
+                    const transcriptionBox = document.getElementById('transcription');
+                    console.log("Received transcript:", data.transcript);
+                    transcriptionBox.innerText += data.transcript + '\n';
+                    console.log("Transcription added:", transcriptionBox.innerText);
+                    ws.close();
+                }
+            };
+            ws.onerror = function(error) {
+                console.error("WebSocket error:", error);
+            };
+            ws.onclose = function(event) {
+                console.log("WebSocket connection closed:", event);
+            };
+        }
+
+        function startRecording() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                console.error("WebSocket is not open");
+                return;
+            }
+            if (!jobId) {
+                console.error("No job ID available");
+                return;
+            }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                console.error("navigator.mediaDevices.getUserMedia is not supported");
+                return;
+            }
+            navigator.mediaDevices.getUserMedia({ audio: true })
+                .then(stream => {
+                    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/wav' });
+                    mediaRecorder.ondataavailable = event => {
+                        audioChunks.push(event.data);
+                        if (mediaRecorder.state === "inactive") {
+                            processAudioChunks(audioChunks);
+                        }
+                    };
+                    mediaRecorder.start(); // Start recording
+                })
+                .catch(error => console.error("Error accessing microphone:", error));
+        }
+
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                mediaRecorder.stop();
+            }
+        }
+
+        function processAudioChunks(chunks) {
+            const audioBlob = new Blob(chunks, { type: 'audio/wav' });
+            const reader = new FileReader();
+            reader.onload = function() {
+                const arrayBuffer = reader.result;
+                ws.send(arrayBuffer);
+                console.log("Audio chunk sent");
+            };
+            reader.readAsArrayBuffer(audioBlob);
+        }
+    </script>
+</body>
+</html>
+
