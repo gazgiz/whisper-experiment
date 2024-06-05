@@ -19,13 +19,13 @@ async def play_and_record_audio(audio_bytes):
     print("Recording complete")
 
     # Save the recorded audio to a file
-    with io.BytesIO() as buffer:
-        sf.write(buffer, recorded_audio, samplerate=sample_rate, format='WAV')
-        buffer.seek(0)
-        with open("recorded_output.wav", "wb") as f:
-            f.write(buffer.read())
+    #with io.BytesIO() as buffer:
+    #    sf.write(buffer, recorded_audio, samplerate=sample_rate, format='WAV')
+    #    buffer.seek(0)
+    #    with open("recorded_output.wav", "wb") as f:
+    #        f.write(buffer.read())
 
-    print("Recorded audio saved to 'recorded_output.wav'")
+    #print("Recorded audio saved to 'recorded_output.wav'")
 
 async def receive_audio_from_server():
     uri = "ws://localhost:8000/ws"
