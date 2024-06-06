@@ -53,7 +53,7 @@ async def websocket_endpoint(websocket: WebSocket):
             message = await websocket.receive()
             if "bytes" in message:
                 data = message["bytes"]
-                await process_audio_chunk(data)
+                await process_audio_chunk(data, websocket)
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
@@ -66,7 +66,7 @@ async def websocket_endpoint(websocket: WebSocket):
         except RuntimeError:
             pass  # WebSocket already closed
 
-async def process_audio_chunk(data):
+async def process_audio_chunk(data, websocket: WebSocket):
     try:
         # Convert the received audio data to numpy array
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -77,13 +77,20 @@ async def process_audio_chunk(data):
         print(f"Transcription: {transcript}")
 
         # Convert the transcribed text to speech with the default speaker and language
-        tts_output = tts.tts(transcript, speaker=default_speaker_id, language=default_language)
+        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
 
         # Write the TTS output to a buffer
         with io.BytesIO() as buffer:
             sf.write(buffer, tts_output, samplerate=22050, format='WAV')
             buffer.seek(0)
             audio_bytes = buffer.read()
+
+        # Check the size of the audio bytes before sending
+        if len(audio_bytes) > 1048576:
+            print("Audio bytes size exceeds 1MB, splitting into smaller chunks.")
+            chunks = [audio_bytes[i:i+1048576] for i in range(0, len(audio_bytes), 1048576)]
+        else:
+            chunks = [audio_bytes]
 
         # Send the start recording signal
         for client in clients:
@@ -92,12 +99,13 @@ async def process_audio_chunk(data):
             except WebSocketDisconnect:
                 clients.remove(client)
 
-        # Send the audio bytes back to all connected clients
-        for client in clients:
-            try:
-                await client.send_bytes(audio_bytes)
-            except WebSocketDisconnect:
-                clients.remove(client)
+        # Send the audio bytes back to all connected clients in chunks
+        for chunk in chunks:
+            for client in clients:
+                try:
+                    await client.send_bytes(chunk)
+                except WebSocketDisconnect:
+                    clients.remove(client)
 
         # Send the stop recording signal to all connected clients
         for client in clients:
@@ -110,5 +118,5 @@ async def process_audio_chunk(data):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=60)  # Increase the max size to 10MB, set ping interval and timeout
 
