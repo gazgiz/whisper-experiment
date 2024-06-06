@@ -21,7 +21,7 @@ async def send_audio_to_server(audio_data, sample_rate=16000):
         print("Audio sent to server")
 
 async def main():
-    duration = 25  # Duration of recording in seconds
+    duration = 10  # Duration of recording in seconds
     sample_rate = 16000  # Sample rate in Hz
 
     audio_data = await record_audio(duration, sample_rate)

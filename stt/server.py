@@ -29,8 +29,12 @@ app.add_middleware(
 # Load the Whisper model
 model = whisper.load_model("base")
 
-# Load the Coqui TTS model
-tts = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
+# Load the Coqui TTS model for multilingual support
+tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=False)
+
+# Set default speaker ID and language
+default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
+default_language = 'ko'
 
 # Store connections
 clients = []
@@ -72,8 +76,8 @@ async def process_audio_chunk(data):
         transcript = result["text"]
         print(f"Transcription: {transcript}")
 
-        # Convert the transcribed text to speech
-        tts_output = tts.tts(transcript)
+        # Convert the transcribed text to speech with the default speaker and language
+        tts_output = tts.tts(transcript, speaker=default_speaker_id, language=default_language)
 
         # Write the TTS output to a buffer
         with io.BytesIO() as buffer:
@@ -81,10 +85,24 @@ async def process_audio_chunk(data):
             buffer.seek(0)
             audio_bytes = buffer.read()
 
+        # Send the start recording signal
+        for client in clients:
+            try:
+                await client.send_text("START_RECORDING")
+            except WebSocketDisconnect:
+                clients.remove(client)
+
         # Send the audio bytes back to all connected clients
         for client in clients:
             try:
                 await client.send_bytes(audio_bytes)
+            except WebSocketDisconnect:
+                clients.remove(client)
+
+        # Send the stop recording signal to all connected clients
+        for client in clients:
+            try:
+                await client.send_text("STOP_RECORDING")
             except WebSocketDisconnect:
                 clients.remove(client)
     except Exception as e:
