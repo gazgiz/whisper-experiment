@@ -8,6 +8,7 @@ import asyncio
 from TTS.api import TTS
 import soundfile as sf
 import io
+import torch
 
 app = FastAPI()
 
@@ -29,8 +30,10 @@ app.add_middleware(
 # Load the Whisper model
 model = whisper.load_model("base")
 
-# Load the Coqui TTS model for multilingual support
-tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=True)
+# Load the Coqui TTS model
+tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=False)
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tts.to(device)
 
 # Set default speaker ID and language
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
