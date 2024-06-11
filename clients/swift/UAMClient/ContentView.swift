@@ -1,5 +1,4 @@
 
-
 import SwiftUI
 import LiveKit
 struct ContentView: View {
@@ -19,6 +18,18 @@ VStack {
 
     if let room = liveKitManager.room {
         Text("Connected to the room: \(room.name ?? "Unknown")")
+    }
+
+    if let localVideoTrack = liveKitManager.localVideoTrack {
+      //  VideoView(track: localVideoTrack)
+       //     .frame(width: 200, height: 200)
+       //     .border(Color.black, width: 1)
+    }
+
+    if let remoteVideoTrack = liveKitManager.remoteVideoTrack {
+      //  VideoView(track: remoteVideoTrack)
+      //      .frame(width: 200, height: 200)
+      //      .border(Color.black, width: 1)
     }
 }
 .onAppear {
