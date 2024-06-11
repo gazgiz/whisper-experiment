@@ -1,0 +1,53 @@
+# Xcode
+#
+# Build generated
+build/
+Build/
+DerivedData/
+
+# Various settings
+xcuserdata/
+*.xcscmblueprint
+
+# Other
+*.moved-aside
+*.xcuserstate
+
+# Swift Package Manager
+# Add this line if you are using SwiftPM to manage dependencies.
+Packages/
+# Add this line if you have Package.resolved file checked in if you have a package dependency.
+Package.resolved
+# Add this line if you want to avoid committing your .build directory
+.build/
+
+# CocoaPods
+# Add this line if you are using CocoaPods to manage dependencies.
+Pods/
+Podfile.lock
+
+# Carthage
+# Add this line if you are using Carthage to manage dependencies.
+/Carthage/Checkouts
+/Carthage/Build
+
+# fastlane
+# It is recommended to not store the screenshots in the git repo.
+# Instead, use fastlane to re-generate the screenshots whenever they are needed.
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+
+# Code Injection by AppCode
+.idea/
+
+# Static Analysis Results
+.xcresult
+
+# Add other IDE-specific directories or files
+.DS_Store
+
+# Temporary files
+*.tmp
+*.swp
+
