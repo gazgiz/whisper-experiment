@@ -16,12 +16,14 @@ async def play_and_record_audio(audio_bytes):
     global recorded_audio
     # Play the audio
     with io.BytesIO(audio_bytes) as buffer:
-        audio, sample_rate = sf.read(buffer)
-        sd.play(audio, samplerate=sample_rate)
-        sd.wait()
-
-    if is_recording:
-        recorded_audio.extend(audio)
+        try:
+            audio, sample_rate = sf.read(buffer, dtype='float32')
+            sd.play(audio, samplerate=sample_rate)
+            sd.wait()
+            if is_recording:
+                recorded_audio.extend(audio)
+        except Exception as e:
+            print(f"Error playing audio: {e}")
 
 async def receive_audio_from_server(uri):
     global audio_clip_number
