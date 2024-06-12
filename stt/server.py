@@ -168,5 +168,5 @@ async def process_audio_chunk(data):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=20, ws_ping_timeout=10, ws_close_timeout=10)  # Increase the max size to 10MB, set ping interval and timeout
+    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30, ws_close_timeout=10)  # Increase the max size to 10MB, set ping interval and timeout
 

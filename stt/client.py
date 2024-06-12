@@ -28,7 +28,7 @@ async def receive_audio_from_server(uri):
 
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=10) as websocket:
+            async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
                 print("Listening for audio from server...")
                 while True:
                     message = await websocket.recv()
@@ -65,7 +65,7 @@ async def receive_audio_from_server(uri):
 async def receive_transcription_from_server(uri):
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=10) as websocket:
+            async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
                 print("Listening for transcription from server...")
                 while True:
                     message = await websocket.recv()
@@ -125,7 +125,7 @@ async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration
 async def send_audio_to_server(audio_data, sample_rate=16000):
     uri = "ws://localhost:8000/send_audio"
 
-    async with websockets.connect(uri) as websocket:
+    async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
         # Convert audio data to bytes
         audio_bytes = audio_data
 
