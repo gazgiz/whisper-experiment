@@ -1,0 +1,3 @@
+[submodule "clients/swift/livekit-example"]
+	path = clients/swift/livekit-example
+	url = https://github.com/livekit-examples/swift-example.git
