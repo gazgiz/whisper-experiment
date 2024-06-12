@@ -40,36 +40,57 @@ default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the li
 default_language = 'ko'
 
 # Store connections
-clients = []
+send_audio_clients = []
+receive_audio_clients = []
 
 @app.get('/')
 async def get():
     with open('index.html') as f:
         return HTMLResponse(f.read())
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/send_audio")
+async def send_audio_endpoint(websocket: WebSocket):
     await websocket.accept()
-    clients.append(websocket)
+    send_audio_clients.append(websocket)
     try:
         while True:
             message = await websocket.receive()
             if "bytes" in message:
                 data = message["bytes"]
-                await process_audio_chunk(data, websocket)
+                await process_audio_chunk(data)
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
         print(f"Exception: {e}")
     finally:
-        if websocket in clients:
-            clients.remove(websocket)
+        if websocket in send_audio_clients:
+            send_audio_clients.remove(websocket)
         try:
             await websocket.close()
         except RuntimeError:
             pass  # WebSocket already closed
 
-async def process_audio_chunk(data, websocket: WebSocket):
+@app.websocket("/receive_audio")
+async def receive_audio_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    receive_audio_clients.append(websocket)
+    try:
+        while True:
+            # Keep connection open to receive TTS audio and transcription
+            await asyncio.sleep(1)
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+    except Exception as e:
+        print(f"Exception: {e}")
+    finally:
+        if websocket in receive_audio_clients:
+            receive_audio_clients.remove(websocket)
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # WebSocket already closed
+
+async def process_audio_chunk(data):
     try:
         # Convert the received audio data to numpy array
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -96,26 +117,33 @@ async def process_audio_chunk(data, websocket: WebSocket):
             chunks = [audio_bytes]
 
         # Send the start recording signal
-        for client in clients:
+        for client in receive_audio_clients:
             try:
-                await client.send_text("START_RECORDING")
+                await client.send_text(json.dumps({"type": "control", "text": "START_RECORDING"}))
             except WebSocketDisconnect:
-                clients.remove(client)
+                receive_audio_clients.remove(client)
 
         # Send the audio bytes back to all connected clients in chunks
         for chunk in chunks:
-            for client in clients:
+            for client in receive_audio_clients:
                 try:
                     await client.send_bytes(chunk)
                 except WebSocketDisconnect:
-                    clients.remove(client)
+                    receive_audio_clients.remove(client)
+
+        # Send the transcription text after sending all audio chunks
+        for client in receive_audio_clients:
+            try:
+                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
+            except WebSocketDisconnect:
+                receive_audio_clients.remove(client)
 
         # Send the stop recording signal to all connected clients
-        for client in clients:
+        for client in receive_audio_clients:
             try:
-                await client.send_text("STOP_RECORDING")
+                await client.send_text(json.dumps({"type": "control", "text": "STOP_RECORDING"}))
             except WebSocketDisconnect:
-                clients.remove(client)
+                receive_audio_clients.remove(client)
     except Exception as e:
         print("Error processing audio chunk:", e)
 
