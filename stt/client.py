@@ -37,9 +37,7 @@ async def receive_audio_from_server(uri):
                     elif isinstance(message, str):
                         if message.strip():  # Only process non-empty messages
                             message_data = json.loads(message)
-                            if message_data["type"] == "transcription":
-                                print(f"Transcription received: {message_data['text']}")
-                            elif message_data["type"] == "control":
+                            if message_data["type"] == "control":
                                 if message_data["text"] == "START_RECORDING":
                                     print("Start recording signal received.")
                                     global is_recording, recorded_audio
@@ -57,6 +55,25 @@ async def receive_audio_from_server(uri):
                                             f.write(buffer.read())
                                     print(f"Recorded audio saved to '{filename}'")
                                     audio_clip_number += 1
+        except websockets.ConnectionClosedError as e:
+            print(f"Connection closed with error: {e}")
+            await asyncio.sleep(5)  # Wait before reconnecting
+        except Exception as e:
+            print(f"Exception: {e}")
+            await asyncio.sleep(5)  # Wait before reconnecting
+
+async def receive_transcription_from_server(uri):
+    while True:
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=10, close_timeout=10) as websocket:
+                print("Listening for transcription from server...")
+                while True:
+                    message = await websocket.recv()
+                    if isinstance(message, str):
+                        if message.strip():  # Only process non-empty messages
+                            message_data = json.loads(message)
+                            if message_data["type"] == "transcription":
+                                print(f"Transcription received: {message_data['text']}")
         except websockets.ConnectionClosedError as e:
             print(f"Connection closed with error: {e}")
             await asyncio.sleep(5)  # Wait before reconnecting
@@ -124,9 +141,11 @@ async def main():
 
     send_audio_uri = "ws://localhost:8000/send_audio"
     receive_audio_uri = "ws://localhost:8000/receive_audio"
+    send_transcript_uri = "ws://localhost:8000/send_transcript"
 
-    # Start the server listening coroutine
-    receive_task = asyncio.create_task(receive_audio_from_server(receive_audio_uri))
+    # Start the server listening coroutines
+    receive_audio_task = asyncio.create_task(receive_audio_from_server(receive_audio_uri))
+    receive_transcript_task = asyncio.create_task(receive_transcription_from_server(send_transcript_uri))
 
     print("Press 'r' to start recording...")
 

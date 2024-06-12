@@ -42,6 +42,7 @@ default_language = 'ko'
 # Store connections
 send_audio_clients = []
 receive_audio_clients = []
+send_transcript_clients = []
 
 @app.get('/')
 async def get():
@@ -76,8 +77,7 @@ async def receive_audio_endpoint(websocket: WebSocket):
     receive_audio_clients.append(websocket)
     try:
         while True:
-            # Keep connection open to receive TTS audio and transcription
-            await asyncio.sleep(1)
+            await asyncio.sleep(1)  # Keep connection open
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
@@ -85,6 +85,25 @@ async def receive_audio_endpoint(websocket: WebSocket):
     finally:
         if websocket in receive_audio_clients:
             receive_audio_clients.remove(websocket)
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass  # WebSocket already closed
+
+@app.websocket("/send_transcript")
+async def send_transcript_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    send_transcript_clients.append(websocket)
+    try:
+        while True:
+            await asyncio.sleep(1)  # Keep connection open
+    except WebSocketDisconnect:
+        print("WebSocket disconnected")
+    except Exception as e:
+        print(f"Exception: {e}")
+    finally:
+        if websocket in send_transcript_clients:
+            send_transcript_clients.remove(websocket)
         try:
             await websocket.close()
         except RuntimeError:
@@ -131,19 +150,19 @@ async def process_audio_chunk(data):
                 except WebSocketDisconnect:
                     receive_audio_clients.remove(client)
 
-        # Send the transcription text after sending all audio chunks
-        for client in receive_audio_clients:
-            try:
-                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
-            except WebSocketDisconnect:
-                receive_audio_clients.remove(client)
-
         # Send the stop recording signal to all connected clients
         for client in receive_audio_clients:
             try:
                 await client.send_text(json.dumps({"type": "control", "text": "STOP_RECORDING"}))
             except WebSocketDisconnect:
                 receive_audio_clients.remove(client)
+
+        # Send the transcription text to the transcription clients
+        for client in send_transcript_clients:
+            try:
+                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
+            except WebSocketDisconnect:
+                send_transcript_clients.remove(client)
     except Exception as e:
         print("Error processing audio chunk:", e)
 
