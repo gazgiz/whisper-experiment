@@ -30,7 +30,7 @@ async def receive_audio_from_server(uri):
 
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
+            async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
                 print("Listening for audio from server...")
                 while True:
                     message = await websocket.recv()
@@ -67,7 +67,7 @@ async def receive_audio_from_server(uri):
 async def receive_transcription_from_server(uri):
     while True:
         try:
-            async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
+            async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
                 print("Listening for transcription from server...")
                 while True:
                     message = await websocket.recv()
@@ -126,14 +126,26 @@ async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration
 
 async def send_audio_to_server(audio_data, sample_rate=16000):
     uri = "ws://localhost:8000/send_audio"
+    retries = 5
 
-    async with websockets.connect(uri, ping_interval=30, ping_timeout=30, close_timeout=10) as websocket:
-        # Convert audio data to bytes
-        audio_bytes = audio_data
+    while retries > 0:
+        try:
+            async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
+                # Convert audio data to bytes
+                audio_bytes = audio_data
 
-        # Send audio data
-        await websocket.send(audio_bytes)
-        print("Audio sent to server")
+                # Send audio data
+                await websocket.send(audio_bytes)
+                print("Audio sent to server")
+                return
+        except (websockets.ConnectionClosedError, asyncio.TimeoutError) as e:
+            print(f"Connection error: {e}, retrying...")
+            retries -= 1
+            await asyncio.sleep(2)
+        except Exception as e:
+            print(f"Unexpected error: {e}")
+            await asyncio.sleep(2)
+    print("Failed to send audio to server after multiple attempts.")
 
 async def main():
     global is_recording
@@ -149,20 +161,12 @@ async def main():
     receive_audio_task = asyncio.create_task(receive_audio_from_server(receive_audio_uri))
     receive_transcript_task = asyncio.create_task(receive_transcription_from_server(send_transcript_uri))
 
-    print("Press 'r' to start recording...")
+    print("Recording continuously...")
 
     while True:
-        # Wait for 'r' key press to start recording
-        while not is_recording:
-            user_input = await asyncio.get_event_loop().run_in_executor(None, input)
-            if user_input.strip().lower() == 'r':
-                is_recording = True
-                break
-
-        if is_recording:
-            audio_data = await record_audio(sample_rate=sample_rate, vad=vad)
-            await send_audio_to_server(audio_data, sample_rate)
-            print("Press 'r' to start recording again...")
+        audio_data = await record_audio(sample_rate=sample_rate, vad=vad)
+        send_audio_task = asyncio.create_task(send_audio_to_server(audio_data, sample_rate))
+        await send_audio_task  # Wait for the send task to complete before starting a new recording
 
 if __name__ == "__main__":
     asyncio.run(main())

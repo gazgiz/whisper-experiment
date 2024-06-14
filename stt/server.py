@@ -31,7 +31,7 @@ app.add_middleware(
 model = whisper.load_model("base")
 
 # Load the Coqui TTS model
-tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=False)
+tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=torch.cuda.is_available())
 device = "cuda" if torch.cuda.is_available() else "cpu"
 tts.to(device)
 
@@ -168,5 +168,5 @@ async def process_audio_chunk(data):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30, ws_close_timeout=10)  # Increase the max size to 10MB, set ping interval and timeout
+    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)  # Increase the max size to 10MB, set ping interval and timeout
 
