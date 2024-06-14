@@ -28,7 +28,7 @@ app.add_middleware(
 )
 
 # Load the Whisper model
-model = whisper.load_model("base")
+model = whisper.load_model("small")
 
 # Load the Coqui TTS model
 tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
@@ -115,7 +115,7 @@ async def process_audio_chunk(data):
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
         # Perform the transcription
-        result = model.transcribe(audio_data)
+        result = model.transcribe(audio_data, language="ko")
         transcript = result["text"]
         print(f"Transcription: {transcript}")
 
