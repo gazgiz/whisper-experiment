@@ -31,7 +31,7 @@ app.add_middleware(
 model = whisper.load_model("base")
 
 # Load the Coqui TTS model
-tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False, gpu=torch.cuda.is_available())
+tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 tts.to(device)
 
