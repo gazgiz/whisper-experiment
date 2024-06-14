@@ -10,3 +10,5 @@ scipy
 aiohttp
 sounddevice
 webrtcvad
+livekit
+livekit-api
