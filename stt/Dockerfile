@@ -17,22 +17,21 @@ RUN curl -LO https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.
 # Set conda environment
 ENV PATH=/opt/conda/bin:$PATH
 
-# Create conda environment with Python 3.9
-RUN conda create -n webrtc_env python=3.9 -y
-RUN echo "conda activate webrtc_env" >> ~/.bashrc
-SHELL ["conda", "run", "-n", "webrtc_env", "/bin/bash", "-c"]
+# Initialize conda and create the environment
+RUN conda init bash && \
+    conda create -n stt_tts python=3.9 -y
 
-# Copy requirements.txt and server.py into the image early to fail fast
+# Copy requirements.txt and server.py into the image
 COPY requirements.txt /root/requirements.txt
 COPY server.py /root/server.py
 
-# Install Whisper separately
-RUN pip install --upgrade pip
-RUN pip install git+https://github.com/openai/whisper.git
+# Ensure the conda environment is activated and install dependencies
+RUN /opt/conda/bin/conda run -n stt_tts pip install --upgrade pip && \
+    /opt/conda/bin/conda run -n stt_tts pip install git+https://github.com/openai/whisper.git && \
+    /opt/conda/bin/conda run -n stt_tts pip install -r /root/requirements.txt
 
-# Install remaining Python dependencies inside the conda environment
-RUN apt -y install cmake
-RUN pip install -r /root/requirements.txt
+# Pre-download Whisper
+RUN /opt/conda/bin/conda run -n stt_tts python -c "import whisper; model = whisper.load_model('small')"
 
 # Install other system dependencies
 RUN apt -y install meson dpkg gzip tar libmount-dev flex bison bzip2 vim git build-essential cmake ninja-build pkg-config libssl-dev libx264-dev libopus-dev libvpx-dev nasm x264 libxml2-dev && \
@@ -87,5 +86,5 @@ WORKDIR /root
 EXPOSE 8000
 
 # Command to run the server
-CMD ["conda", "run", "--no-capture-output", "-n", "webrtc_env", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["conda", "run", "--no-capture-output", "-n", "stt_tts", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
 
