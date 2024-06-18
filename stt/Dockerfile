@@ -73,6 +73,15 @@ RUN cd /root/src/gst-plugins-rs && \
     /root/.cargo/bin/cargo cbuild -p gst-plugin-rtp && \
     /root/.cargo/bin/cargo cinstall -p gst-plugin-rtp
 
+# Install GStreamer Python bindings
+RUN apt install -y python3-gi python3-gi-cairo gobject-introspection libgirepository1.0-dev gir1.2-gstreamer-1.0 gir1.2-gtk-3.0
+
+# Ensure pip is installed
+RUN apt install -y python3-pip
+
+# Install PyGObject via pip
+RUN pip install pygobject
+
 # Set environment variable for GStreamer plugin path
 ENV LD_LIBRARY_PATH=/usr/local/lib/x86_64-linux-gnu:/usr/local/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
 ENV GST_PLUGIN_PATH=/usr/local/lib/x86_64-linux-gnu/gstreamer-1.0/:/usr/local/lib/gstreamer-1.0:$GST_PLUGIN_PATH
