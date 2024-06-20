@@ -1,7 +1,6 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
-import whisper
 import numpy as np
 import json
 import asyncio
@@ -9,6 +8,8 @@ from TTS.api import TTS
 import soundfile as sf
 import io
 import torch
+from faster_whisper import WhisperModel
+
 
 app = FastAPI()
 
@@ -28,11 +29,16 @@ app.add_middleware(
 )
 
 # Load the Whisper model
-model = whisper.load_model("small")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+model_size = "medium"
+if device == "cuda":
+    model = WhisperModel(model_size, device="cuda", compute_type="float16")
+else:
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
 # Load the Coqui TTS model
 tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-device = "cuda" if torch.cuda.is_available() else "cpu"
 tts.to(device)
 
 # Set default speaker ID and language
@@ -115,8 +121,8 @@ async def process_audio_chunk(data):
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
 
         # Perform the transcription
-        result = model.transcribe(audio_data, language="ko")
-        transcript = result["text"]
+        result, _ = model.transcribe(audio_data, language="ko")
+        transcript = " ".join([seg.text.strip() for seg in list(result)])
         print(f"Transcription: {transcript}")
 
         # Convert the transcribed text to speech with the default speaker and language
