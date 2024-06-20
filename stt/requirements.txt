@@ -3,7 +3,8 @@ torchaudio
 fastapi
 fastapi-cors
 uvicorn
-git+https://github.com/openai/whisper.git
+#git+https://github.com/openai/whisper.git
+faster_whisper
 numpy
 websockets
 scipy
