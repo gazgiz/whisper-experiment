@@ -24,10 +24,10 @@ RUN conda init bash && \
 # Copy requirements.txt and server.py into the image
 COPY requirements.txt /root/requirements.txt
 COPY server.py /root/server.py
+COPY config.json /root/config.json
 
 # Ensure the conda environment is activated and install dependencies
 RUN /opt/conda/bin/conda run -n stt_tts pip install --upgrade pip && \
-    /opt/conda/bin/conda run -n stt_tts pip install git+https://github.com/openai/whisper.git && \
     /opt/conda/bin/conda run -n stt_tts pip install -r /root/requirements.txt
 
 # Pre-download Whisper

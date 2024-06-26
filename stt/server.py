@@ -9,6 +9,14 @@ import soundfile as sf
 import io
 import torch
 from faster_whisper import WhisperModel
+import json
+
+
+# Function to read the configuration file
+def load_config():
+    with open('config.json', 'r') as file:
+        config = json.load(file)
+    return config
 
 
 app = FastAPI()
@@ -28,8 +36,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+config = load_config()
+use_gpu = config['use_gpu']
+
+
 # Load the Whisper model
-device = "cuda" if torch.cuda.is_available() else "cpu"
+device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+
+print("Using GPU" if device == "cuda" else "Using CPU")
+
 
 model_size = "medium"
 if device == "cuda":
