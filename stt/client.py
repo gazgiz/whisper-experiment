@@ -42,7 +42,7 @@ async def receive_audio_from_server(uri):
                             if message_data["type"] == "control":
                                 if message_data["text"] == "START_RECORDING":
                                     print("Start recording signal received.")
-                                    global is_recording, recorded_audio
+                                    global is_recording
                                     is_recording = True
                                     recorded_audio = []
                                 elif message_data["text"] == "STOP_RECORDING":

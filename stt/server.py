@@ -11,13 +11,11 @@ import torch
 from faster_whisper import WhisperModel
 import json
 
-
 # Function to read the configuration file
 def load_config():
     with open('config.json', 'r') as file:
         config = json.load(file)
     return config
-
 
 app = FastAPI()
 
@@ -36,16 +34,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 config = load_config()
 use_gpu = config['use_gpu']
-
+text_only = config['text_only']
 
 # Load the Whisper model
 device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
-
 print("Using GPU" if device == "cuda" else "Using CPU")
-
 
 model_size = "medium"
 if device == "cuda":
@@ -54,8 +49,9 @@ else:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
 # Load the Coqui TTS model
-tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-tts.to(device)
+if not text_only:
+    tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
+    tts.to(device)
 
 # Set default speaker ID and language
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
@@ -141,43 +137,44 @@ async def process_audio_chunk(data):
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         print(f"Transcription: {transcript}")
 
-        # Convert the transcribed text to speech with the default speaker and language
-        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+        if not text_only:
+            # Convert the transcribed text to speech with the default speaker and language
+            tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
 
-        # Write the TTS output to a buffer
-        with io.BytesIO() as buffer:
-            sf.write(buffer, tts_output, samplerate=22050, format='WAV')
-            buffer.seek(0)
-            audio_bytes = buffer.read()
+            # Write the TTS output to a buffer
+            with io.BytesIO() as buffer:
+                sf.write(buffer, tts_output, samplerate=22050, format='WAV')
+                buffer.seek(0)
+                audio_bytes = buffer.read()
 
-        # Check the size of the audio bytes before sending
-        if len(audio_bytes) > 1048576:
-            print("Audio bytes size exceeds 1MB, splitting into smaller chunks.")
-            chunks = [audio_bytes[i:i+1048576] for i in range(0, len(audio_bytes), 1048576)]
-        else:
-            chunks = [audio_bytes]
+            # Check the size of the audio bytes before sending
+            if len(audio_bytes) > 1048576:
+                print("Audio bytes size exceeds 1MB, splitting into smaller chunks.")
+                chunks = [audio_bytes[i:i+1048576] for i in range(0, len(audio_bytes), 1048576)]
+            else:
+                chunks = [audio_bytes]
 
-        # Send the start recording signal
-        for client in receive_audio_clients:
-            try:
-                await client.send_text(json.dumps({"type": "control", "text": "START_RECORDING"}))
-            except WebSocketDisconnect:
-                receive_audio_clients.remove(client)
-
-        # Send the audio bytes back to all connected clients in chunks
-        for chunk in chunks:
+            # Send the start recording signal
             for client in receive_audio_clients:
                 try:
-                    await client.send_bytes(chunk)
+                    await client.send_text(json.dumps({"type": "control", "text": "START_RECORDING"}))
                 except WebSocketDisconnect:
                     receive_audio_clients.remove(client)
 
-        # Send the stop recording signal to all connected clients
-        for client in receive_audio_clients:
-            try:
-                await client.send_text(json.dumps({"type": "control", "text": "STOP_RECORDING"}))
-            except WebSocketDisconnect:
-                receive_audio_clients.remove(client)
+            # Send the audio bytes back to all connected clients in chunks
+            for chunk in chunks:
+                for client in receive_audio_clients:
+                    try:
+                        await client.send_bytes(chunk)
+                    except WebSocketDisconnect:
+                        receive_audio_clients.remove(client)
+
+            # Send the stop recording signal to all connected clients
+            for client in receive_audio_clients:
+                try:
+                    await client.send_text(json.dumps({"type": "control", "text": "STOP_RECORDING"}))
+                except WebSocketDisconnect:
+                    receive_audio_clients.remove(client)
 
         # Send the transcription text to the transcription clients
         for client in send_transcript_clients:
