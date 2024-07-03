@@ -1,6 +1,3 @@
-import pyaudio
-
-# Add these imports at the top of your file
 import gi
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gtk, GObject, Gdk, Pango
@@ -9,7 +6,7 @@ import threading
 import logging
 from livekit import rtc
 import numpy as np
-
+import pyaudio
 
 SAMPLE_RATE = 48000
 NUM_CHANNELS = 1
@@ -143,6 +140,7 @@ class LiveKitApp(Gtk.Application):
             logging.info("Track subscribed: %s", publication.sid)
             if track.kind == "audio":
                 logging.info("Audio track received: %s", track.sid)
+                asyncio.ensure_future(self.play_audio(track))
 
         try:
             await self.room.connect(url, token)
@@ -163,6 +161,26 @@ class LiveKitApp(Gtk.Application):
             asyncio.ensure_future(self.publish_frames(source))
         except Exception as e:
             logging.error(f"Exception occurred: {e}")
+
+    async def play_audio(self, track):
+        p = pyaudio.PyAudio()
+
+        # Open stream for playback
+        stream = p.open(format=pyaudio.paInt16,
+                        channels=NUM_CHANNELS,
+                        rate=SAMPLE_RATE,
+                        output=True,
+                        frames_per_buffer=480)
+
+        while True:
+            frame = await track.recv()
+            audio_data = np.frombuffer(frame.data, dtype=np.int16)
+            stream.write(audio_data)
+
+        # Close stream
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
 
     def on_disconnect_clicked(self, button):
         print("Disconnect button clicked...")
