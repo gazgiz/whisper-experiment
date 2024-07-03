@@ -1,4 +1,4 @@
 pygobject
-aiortc
 livekit
 websockets
+pyaudio

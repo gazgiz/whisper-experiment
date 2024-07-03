@@ -1,26 +1,32 @@
-from gi.repository import Gtk, GObject, Gdk, Pango
+import pyaudio
+
+# Add these imports at the top of your file
 import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, GObject, Gdk, Pango
 import asyncio
 import threading
 import logging
 from livekit import rtc
-from aiortc.contrib.media import MediaPlayer
+import numpy as np
 
-gi.require_version('Gtk', '4.0')
+
+SAMPLE_RATE = 48000
+NUM_CHANNELS = 1
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
 
 
 class LiveKitApp(Gtk.Application):
+
     def __init__(self):
         super().__init__(application_id="com.example.LiveKitApp")
         self.connect("activate", self.on_activate)
         self.room = None
         self.local_audio_track = None
         self.loop = asyncio.new_event_loop()
-        threading.Thread(target=self.start_loop, args=(
-            self.loop,), daemon=True).start()
+        threading.Thread(target=self.start_loop, args=(self.loop,), daemon=True).start()
 
     def start_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -83,14 +89,40 @@ class LiveKitApp(Gtk.Application):
         url = self.url_entry.get_text()
         token_buffer = self.token_entry.get_buffer()
         token = token_buffer.get_text(
-            token_buffer.get_start_iter(), token_buffer.get_end_iter(), False)
+            token_buffer.get_start_iter(), token_buffer.get_end_iter(), False
+        )
         room_name = self.room_entry.get_text()
         print(f"URL: {url}")
         # Print only the first 30 characters of the token for privacy
         print(f"Token: {token[:30]}...")
         print(f"Room name: {room_name}")
         asyncio.run_coroutine_threadsafe(
-            self.join_room(url, token, room_name), self.loop)
+            self.join_room(url, token, room_name), self.loop
+        )
+
+    async def publish_frames(self, source: rtc.AudioSource):
+        p = pyaudio.PyAudio()
+
+        # Open stream
+        stream = p.open(format=pyaudio.paInt16,
+                        channels=NUM_CHANNELS,
+                        rate=SAMPLE_RATE,
+                        input=True,
+                        frames_per_buffer=480)
+
+        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, 480)
+        audio_data = np.frombuffer(audio_frame.data, dtype=np.int16)
+
+        while True:
+            # Read data from microphone
+            mic_data = stream.read(480)
+            np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
+            await source.capture_frame(audio_frame)
+
+        # Close stream
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
 
     async def join_room(self, url, token, room_name):
         print("Attempting to join room...")
@@ -98,11 +130,16 @@ class LiveKitApp(Gtk.Application):
 
         @self.room.on("participant_connected")
         def on_participant_connected(participant: rtc.RemoteParticipant):
-            logging.info("Participant connected: %s %s",
-                         participant.sid, participant.identity)
+            logging.info(
+                "Participant connected: %s %s", participant.sid, participant.identity
+            )
 
         @self.room.on("track_subscribed")
-        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        def on_track_subscribed(
+            track: rtc.Track,
+            publication: rtc.RemoteTrackPublication,
+            participant: rtc.RemoteParticipant,
+        ):
             logging.info("Track subscribed: %s", publication.sid)
             if track.kind == "audio":
                 logging.info("Audio track received: %s", track.sid)
@@ -113,13 +150,17 @@ class LiveKitApp(Gtk.Application):
             self.update_status("Connected", "red")
 
             # Create and publish local audio track
-            source = rtc.AudioSource(44000, 1)
+            source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
             self.local_audio_track = rtc.LocalAudioTrack.create_audio_track(
-                "mic-audio", source)
+                "mic-audio", source
+            )
             options = rtc.TrackPublishOptions()
             options.source = rtc.TrackSource.SOURCE_MICROPHONE
-            await self.room.local_participant.publish_track(self.local_audio_track, options)
+            await self.room.local_participant.publish_track(
+                self.local_audio_track, options
+            )
             logging.info("Local audio track published")
+            asyncio.ensure_future(self.publish_frames(source))
         except Exception as e:
             logging.error(f"Exception occurred: {e}")
 
@@ -148,6 +189,7 @@ class LiveKitApp(Gtk.Application):
         else:
             context.add_class("disconnected")
 
+
 if __name__ == "__main__":
     app = LiveKitApp()
 
@@ -163,7 +205,9 @@ if __name__ == "__main__":
     css_provider = Gtk.CssProvider()
     css_provider.load_from_data(css.encode())
     display = Gdk.Display.get_default()
-    Gtk.StyleContext.add_provider_for_display(display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+    Gtk.StyleContext.add_provider_for_display(
+        display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+    )
 
     app.run(None)
 
