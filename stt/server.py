@@ -13,7 +13,7 @@ import uvicorn
 import argparse
 
 # Constants for audio settings
-SAMPLE_RATE = 48000  # WebRTC standard sample rate
+SAMPLE_RATE = 22050  # WebRTC standard sample rate
 NUM_CHANNELS = 1
 
 # Function to read the configuration file
