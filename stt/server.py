@@ -1,6 +1,5 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
 import numpy as np
 import json
 import asyncio
@@ -9,7 +8,13 @@ import soundfile as sf
 import io
 import torch
 from faster_whisper import WhisperModel
-import json
+from livekit import rtc
+import uvicorn
+import argparse
+
+# Constants for audio settings
+SAMPLE_RATE = 48000  # WebRTC standard sample rate
+NUM_CHANNELS = 1
 
 # Function to read the configuration file
 def load_config():
@@ -18,21 +23,6 @@ def load_config():
     return config
 
 app = FastAPI()
-
-# Configure CORS
-origins = [
-    "http://localhost",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 config = load_config()
 use_gpu = config['use_gpu']
@@ -58,8 +48,6 @@ default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the li
 default_language = 'ko'
 
 # Store connections
-send_audio_clients = []
-receive_audio_clients = []
 send_transcript_clients = []
 
 @app.get('/')
@@ -67,10 +55,9 @@ async def get():
     with open('index.html') as f:
         return HTMLResponse(f.read())
 
-@app.websocket("/send_audio")
-async def send_audio_endpoint(websocket: WebSocket):
+@app.websocket("/receive_audio")
+async def receive_audio_endpoint(websocket: WebSocket):
     await websocket.accept()
-    send_audio_clients.append(websocket)
     try:
         while True:
             message = await websocket.receive()
@@ -82,27 +69,6 @@ async def send_audio_endpoint(websocket: WebSocket):
     except Exception as e:
         print(f"Exception: {e}")
     finally:
-        if websocket in send_audio_clients:
-            send_audio_clients.remove(websocket)
-        try:
-            await websocket.close()
-        except RuntimeError:
-            pass  # WebSocket already closed
-
-@app.websocket("/receive_audio")
-async def receive_audio_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    receive_audio_clients.append(websocket)
-    try:
-        while True:
-            await asyncio.sleep(1)  # Keep connection open
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
-    except Exception as e:
-        print(f"Exception: {e}")
-    finally:
-        if websocket in receive_audio_clients:
-            receive_audio_clients.remove(websocket)
         try:
             await websocket.close()
         except RuntimeError:
@@ -130,10 +96,15 @@ async def send_transcript_endpoint(websocket: WebSocket):
 async def process_audio_chunk(data):
     try:
         # Convert the received audio data to numpy array
-        audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        audio_data = np.frombuffer(data, dtype=np.int16)
+
+        # Ensure the audio data is at the target sample rate
+        if len(audio_data) == 0:
+            print("Received empty audio data")
+            return
 
         # Perform the transcription
-        result, _ = model.transcribe(audio_data, language="ko")
+        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language="ko")
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         print(f"Transcription: {transcript}")
 
@@ -141,40 +112,18 @@ async def process_audio_chunk(data):
             # Convert the transcribed text to speech with the default speaker and language
             tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
 
-            # Write the TTS output to a buffer
+            # Write the TTS output to a buffer at the correct sample rate
             with io.BytesIO() as buffer:
-                sf.write(buffer, tts_output, samplerate=22050, format='WAV')
+                sf.write(buffer, tts_output, samplerate=SAMPLE_RATE, format='WAV')
                 buffer.seek(0)
-                audio_bytes = buffer.read()
+                audio_bytes, sr = sf.read(buffer, dtype='int16')
 
-            # Check the size of the audio bytes before sending
-            if len(audio_bytes) > 1048576:
-                print("Audio bytes size exceeds 1MB, splitting into smaller chunks.")
-                chunks = [audio_bytes[i:i+1048576] for i in range(0, len(audio_bytes), 1048576)]
-            else:
-                chunks = [audio_bytes]
+            # Ensure the audio data is in the correct format
+            if sr != SAMPLE_RATE:
+                raise ValueError("Sample rate mismatch in audio processing")
 
-            # Send the start recording signal
-            for client in receive_audio_clients:
-                try:
-                    await client.send_text(json.dumps({"type": "control", "text": "START_RECORDING"}))
-                except WebSocketDisconnect:
-                    receive_audio_clients.remove(client)
-
-            # Send the audio bytes back to all connected clients in chunks
-            for chunk in chunks:
-                for client in receive_audio_clients:
-                    try:
-                        await client.send_bytes(chunk)
-                    except WebSocketDisconnect:
-                        receive_audio_clients.remove(client)
-
-            # Send the stop recording signal to all connected clients
-            for client in receive_audio_clients:
-                try:
-                    await client.send_text(json.dumps({"type": "control", "text": "STOP_RECORDING"}))
-                except WebSocketDisconnect:
-                    receive_audio_clients.remove(client)
+            # Send TTS audio to LiveKit room
+            await publish_tts_to_livekit(audio_bytes)
 
         # Send the transcription text to the transcription clients
         for client in send_transcript_clients:
@@ -185,7 +134,42 @@ async def process_audio_chunk(data):
     except Exception as e:
         print("Error processing audio chunk:", e)
 
+async def publish_tts_to_livekit(audio_data):
+    # Create and configure the audio frame
+    audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, len(audio_data))
+    np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
+
+    # Send the audio data frame to LiveKit
+    await source.capture_frame(audio_frame)
+
 if __name__ == "__main__":
-    import uvicorn
+    parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
+    parser.add_argument('--livekit_url', type=str, required=True, help='LiveKit server URL')
+    parser.add_argument('--livekit_token', type=str, required=True, help='LiveKit authentication token')
+
+    args = parser.parse_args()
+
+    # Initialize LiveKit Room
+    livekit_room = None
+    source = None  # Declare source at the top level to be accessible in the function
+
+    async def initialize_livekit_room():
+        global livekit_room
+        global source
+        livekit_room = rtc.Room()
+        await livekit_room.connect(args.livekit_url, args.livekit_token)
+        print(f"Connected to LiveKit room: {livekit_room.name}")
+
+        # Create the audio source and track
+        source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+        local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
+
+        # Publish the audio track to the room
+        await livekit_room.local_participant.publish_track(local_audio_track)
+        print("Published TTS audio track to LiveKit room")
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(initialize_livekit_room())
+
     uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)  # Increase the max size to 10MB, set ping interval and timeout
 

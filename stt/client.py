@@ -12,58 +12,6 @@ is_recording = False
 recorded_audio = []
 audio_clip_number = 0
 
-async def play_and_record_audio(audio_bytes):
-    global recorded_audio
-    # Play the audio
-    with io.BytesIO(audio_bytes) as buffer:
-        try:
-            audio, sample_rate = sf.read(buffer, dtype='float32')
-            sd.play(audio, samplerate=sample_rate)
-            sd.wait()
-            if is_recording:
-                recorded_audio.extend(audio)
-        except Exception as e:
-            print(f"Error playing audio: {e}")
-
-async def receive_audio_from_server(uri):
-    global audio_clip_number
-
-    while True:
-        try:
-            async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
-                print("Listening for audio from server...")
-                while True:
-                    message = await websocket.recv()
-                    if isinstance(message, bytes):
-                        await play_and_record_audio(message)
-                    elif isinstance(message, str):
-                        if message.strip():  # Only process non-empty messages
-                            message_data = json.loads(message)
-                            if message_data["type"] == "control":
-                                if message_data["text"] == "START_RECORDING":
-                                    print("Start recording signal received.")
-                                    global is_recording
-                                    is_recording = True
-                                    recorded_audio = []
-                                elif message_data["text"] == "STOP_RECORDING":
-                                    print("Stop recording signal received.")
-                                    is_recording = False
-                                    # Save the recorded audio to a file
-                                    filename = f"recorded_output_{audio_clip_number}.wav"
-                                    with io.BytesIO() as buffer:
-                                        sf.write(buffer, np.array(recorded_audio), samplerate=22050, format='WAV')
-                                        buffer.seek(0)
-                                        with open(filename, "wb") as f:
-                                            f.write(buffer.read())
-                                    print(f"Recorded audio saved to '{filename}'")
-                                    audio_clip_number += 1
-        except websockets.ConnectionClosedError as e:
-            print(f"Connection closed with error: {e}")
-            await asyncio.sleep(5)  # Wait before reconnecting
-        except Exception as e:
-            print(f"Exception: {e}")
-            await asyncio.sleep(5)  # Wait before reconnecting
-
 async def receive_transcription_from_server(uri):
     while True:
         try:
@@ -125,7 +73,7 @@ async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration
     return b"".join(voiced_frames)
 
 async def send_audio_to_server(audio_data, sample_rate=16000):
-    uri = "ws://localhost:8000/send_audio"
+    uri = "ws://localhost:8000/receive_audio"
     retries = 5
 
     while retries > 0:
@@ -153,13 +101,10 @@ async def main():
     vad = webrtcvad.Vad()
     vad.set_mode(1)  # 0: least aggressive, 3: most aggressive
 
-    send_audio_uri = "ws://localhost:8000/send_audio"
-    receive_audio_uri = "ws://localhost:8000/receive_audio"
-    send_transcript_uri = "ws://localhost:8000/send_transcript"
+    receive_transcript_uri = "ws://localhost:8000/send_transcript"
 
-    # Start the server listening coroutines
-    receive_audio_task = asyncio.create_task(receive_audio_from_server(receive_audio_uri))
-    receive_transcript_task = asyncio.create_task(receive_transcription_from_server(send_transcript_uri))
+    # Start the transcription listening coroutine
+    receive_transcript_task = asyncio.create_task(receive_transcription_from_server(receive_transcript_uri))
 
     print("Recording continuously...")
 

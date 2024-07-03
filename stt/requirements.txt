@@ -1,7 +1,6 @@
 TTS
 torchaudio
 fastapi
-fastapi-cors
 uvicorn
 faster_whisper
 numpy
