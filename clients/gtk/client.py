@@ -23,6 +23,8 @@ class LiveKitApp(Gtk.Application):
         self.room = None
         self.local_audio_track = None
         self.loop = asyncio.new_event_loop()
+        self.stop_event = asyncio.Event()
+        self.tasks = []
         threading.Thread(target=self.start_loop, args=(self.loop,), daemon=True).start()
 
     def start_loop(self, loop):
@@ -93,9 +95,10 @@ class LiveKitApp(Gtk.Application):
         # Print only the first 30 characters of the token for privacy
         print(f"Token: {token[:30]}...")
         print(f"Room name: {room_name}")
-        asyncio.run_coroutine_threadsafe(
+        task = asyncio.run_coroutine_threadsafe(
             self.join_room(url, token, room_name), self.loop
         )
+        self.tasks.append(task)
 
     async def publish_frames(self, source: rtc.AudioSource):
         p = pyaudio.PyAudio()
@@ -110,16 +113,20 @@ class LiveKitApp(Gtk.Application):
         audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, 480)
         audio_data = np.frombuffer(audio_frame.data, dtype=np.int16)
 
-        while True:
-            # Read data from microphone
-            mic_data = stream.read(480)
-            np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
-            await source.capture_frame(audio_frame)
-
-        # Close stream
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+        try:
+            while not self.stop_event.is_set():
+                # Read data from microphone
+                mic_data = stream.read(480)
+                np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
+                await source.capture_frame(audio_frame)
+        except asyncio.CancelledError:
+            print("publish_frames cancelled")
+        finally:
+            print("Stopping publish_frames")
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
 
     async def join_room(self, url, token, room_name):
         print("Attempting to join room...")
@@ -132,15 +139,16 @@ class LiveKitApp(Gtk.Application):
             )
 
         @self.room.on("track_subscribed")
-        def on_track_subscribed(
-            track: rtc.Track,
+        async def on_track_subscribed(
+            track: rtc.AudioTrack,
             publication: rtc.RemoteTrackPublication,
             participant: rtc.RemoteParticipant,
         ):
-            logging.info("Track subscribed: %s", publication.sid)
+            logging.info("Audio track subscribed: %s", publication.sid)
             if track.kind == "audio":
                 logging.info("Audio track received: %s", track.sid)
-                asyncio.ensure_future(self.play_audio(track))
+                task = asyncio.create_task(self.play_audio(track))
+                self.tasks.append(task)
 
         try:
             await self.room.connect(url, token)
@@ -158,7 +166,8 @@ class LiveKitApp(Gtk.Application):
                 self.local_audio_track, options
             )
             logging.info("Local audio track published")
-            asyncio.ensure_future(self.publish_frames(source))
+            task = asyncio.create_task(self.publish_frames(source))
+            self.tasks.append(task)
         except Exception as e:
             logging.error(f"Exception occurred: {e}")
 
@@ -172,21 +181,33 @@ class LiveKitApp(Gtk.Application):
                         output=True,
                         frames_per_buffer=480)
 
-        while True:
-            frame = await track.recv()
+        def on_audio_frame(frame):
             audio_data = np.frombuffer(frame.data, dtype=np.int16)
             stream.write(audio_data)
 
-        # Close stream
-        stream.stop_stream()
-        stream.close()
-        p.terminate()
+        track.on("audio_frame", on_audio_frame)
+
+        try:
+            while not self.stop_event.is_set():
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            print("play_audio cancelled")
+        finally:
+            print("Stopping play_audio")
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
 
     def on_disconnect_clicked(self, button):
         print("Disconnect button clicked...")
+        self.stop_event.set()
+        for task in self.tasks:
+            task.cancel()
         asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
 
     async def disconnect(self):
+        await self.stop_tasks()
         if self.local_audio_track:
             await self.local_audio_track.stop()
             self.local_audio_track = None
@@ -196,6 +217,12 @@ class LiveKitApp(Gtk.Application):
             self.room = None
             logging.info("Room disconnected.")
         self.update_status("Disconnected", "black")
+        self.stop_event.clear()
+
+    async def stop_tasks(self):
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        print("All tasks cancelled")
+        self.tasks.clear()
 
     def update_status(self, status, color):
         self.status_label.set_text(status)
@@ -218,7 +245,6 @@ if __name__ == "__main__":
     }
     .disconnected {
         color: black;
-    }
     """
     css_provider = Gtk.CssProvider()
     css_provider.load_from_data(css.encode())
