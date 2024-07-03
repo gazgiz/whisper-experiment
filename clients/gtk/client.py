@@ -1,19 +1,31 @@
+from gi.repository import Gtk, GObject, Gdk, Pango
 import gi
 import asyncio
 import threading
-import websockets
-import json
-from gi.repository import Gtk, GObject
-from aiortc import RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaPlayer, MediaRecorder
+import logging
+from livekit import rtc
+from aiortc.contrib.media import MediaPlayer
 
-# Ensure GTK 4 is used
 gi.require_version('Gtk', '4.0')
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
+
 
 class LiveKitApp(Gtk.Application):
     def __init__(self):
         super().__init__(application_id="com.example.LiveKitApp")
         self.connect("activate", self.on_activate)
+        self.room = None
+        self.local_audio_track = None
+        self.loop = asyncio.new_event_loop()
+        threading.Thread(target=self.start_loop, args=(
+            self.loop,), daemon=True).start()
+
+    def start_loop(self, loop):
+        asyncio.set_event_loop(loop)
+        print("Starting asyncio event loop...")
+        loop.run_forever()
 
     def on_activate(self, app):
         print("Activating application...")
@@ -24,40 +36,45 @@ class LiveKitApp(Gtk.Application):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         window.set_child(box)
 
+        # URL Entry
+        url_label = Gtk.Label(label="LiveKit URL:")
+        box.append(url_label)
         self.url_entry = Gtk.Entry()
         self.url_entry.set_text("wss://jupiter7-rdxxacqa.livekit.cloud")
         self.url_entry.set_placeholder_text("Enter LiveKit URL")
         box.append(self.url_entry)
 
-        self.token_label = Gtk.Label(label="Enter LiveKit Token:")
-        box.append(self.token_label)
-        
+        # Token Entry
+        token_label = Gtk.Label(label="Enter LiveKit Token:")
+        box.append(token_label)
         self.token_entry = Gtk.TextView()
         self.token_entry.set_wrap_mode(Gtk.WrapMode.WORD)
-        token_buffer = self.token_entry.get_buffer()
-        token_buffer.set_text(
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MTcxODYyNTMsImlzcyI6IkFQSTQ0Q0F1TlNyODdyOCIsIm5iZiI6MTcxNzA5NjI1Mywic3ViIjoiU3dpZnQiLCJ2aWRlbyI6eyJjYW5QdWJsaXNoIjp0cnVlLCJjYW5QdWJsaXNoRGF0YSI6dHJ1ZSwiY2FuU3Vic2NyaWJlIjp0cnVlLCJyb29tIjoiVUFUTSIsInJvb21Kb2luIjp0cnVlfX0.yyDNHVHA3oztzTqhc9RCEtEovZefngrwoI2Pn1pst10",
-            -1
-        )
         token_scroll = Gtk.ScrolledWindow()
         token_scroll.set_min_content_height(100)
         token_scroll.set_child(self.token_entry)
         box.append(token_scroll)
 
+        # Room Name Entry
+        room_label = Gtk.Label(label="Room Name:")
+        box.append(room_label)
         self.room_entry = Gtk.Entry()
         self.room_entry.set_text("SKT")
         self.room_entry.set_placeholder_text("Enter room name")
         box.append(self.room_entry)
 
-        self.button = Gtk.Button(label="Connect")
-        self.button.connect("clicked", self.on_connect_clicked)
-        box.append(self.button)
+        # Connect Button
+        self.connect_button = Gtk.Button(label="Connect")
+        self.connect_button.connect("clicked", self.on_connect_clicked)
+        box.append(self.connect_button)
 
-        self.video_area = Gtk.DrawingArea()
-        box.append(self.video_area)
+        # Disconnect Button
+        self.disconnect_button = Gtk.Button(label="Disconnect")
+        self.disconnect_button.connect("clicked", self.on_disconnect_clicked)
+        box.append(self.disconnect_button)
 
-        self.peer_connection = None
-        self.recorder = None
+        # Status Label
+        self.status_label = Gtk.Label(label="Disconnected")
+        box.append(self.status_label)
 
         window.show()
 
@@ -65,89 +82,88 @@ class LiveKitApp(Gtk.Application):
         print("Connect button clicked...")
         url = self.url_entry.get_text()
         token_buffer = self.token_entry.get_buffer()
-        token = token_buffer.get_text(token_buffer.get_start_iter(), token_buffer.get_end_iter(), False)
+        token = token_buffer.get_text(
+            token_buffer.get_start_iter(), token_buffer.get_end_iter(), False)
         room_name = self.room_entry.get_text()
         print(f"URL: {url}")
-        print(f"Token: {token[:30]}...")  # Print only the first 30 characters of the token for privacy
+        # Print only the first 30 characters of the token for privacy
+        print(f"Token: {token[:30]}...")
         print(f"Room name: {room_name}")
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            print("Event loop is running, scheduling join_room...")
-            asyncio.run_coroutine_threadsafe(self.join_room(url, token, room_name), loop)
-        else:
-            print("Event loop is not running. Starting new event loop...")
-            asyncio.run(self.join_room(url, token, room_name))
+        asyncio.run_coroutine_threadsafe(
+            self.join_room(url, token, room_name), self.loop)
 
     async def join_room(self, url, token, room_name):
         print("Attempting to join room...")
-        headers = {
-            'Authorization': f'Bearer {token}',
-            'Content-Type': 'application/json'
-        }
-        websocket_url = url.replace("https", "wss") + "/rtc"
+        self.room = rtc.Room()
+
+        @self.room.on("participant_connected")
+        def on_participant_connected(participant: rtc.RemoteParticipant):
+            logging.info("Participant connected: %s %s",
+                         participant.sid, participant.identity)
+
+        @self.room.on("track_subscribed")
+        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            logging.info("Track subscribed: %s", publication.sid)
+            if track.kind == "audio":
+                logging.info("Audio track received: %s", track.sid)
 
         try:
-            print(f"Connecting to WebSocket at {websocket_url} with headers: {headers}")
-            async with websockets.connect(websocket_url, extra_headers=headers) as websocket:
-                join_data = {
-                    'method': 'join',
-                    'room': room_name
-                }
-                await websocket.send(json.dumps(join_data))
-                
-                response = await websocket.recv()
-                try:
-                    response_text = response.decode('utf-8')
-                except (UnicodeDecodeError, AttributeError):
-                    response_text = response  # Handle cases where response is not a string
-                
-                try:
-                    join_response = json.loads(response_text)
-                    print(f"Join response: {join_response}")
-                except json.JSONDecodeError:
-                    print(f"Failed to decode JSON response: {response_text}")
-                    return
+            await self.room.connect(url, token)
+            logging.info("Connected to room %s", self.room.name)
+            self.update_status("Connected", "red")
 
-                if 'sdp' in join_response and 'type' in join_response:
-                    self.peer_connection = RTCPeerConnection()
-                    
-                    # Set up local audio capture
-                    player = MediaPlayer(None)  # Use default microphone
-                    self.peer_connection.addTrack(player.audio)
-
-                    # Handle incoming media
-                    @self.peer_connection.on("track")
-                    async def on_track(track):
-                        if track.kind == "audio":
-                            print("Received audio track")
-                            if self.recorder is None:
-                                self.recorder = MediaRecorder(None)  # Use default speakers
-                                await self.recorder.start()
-                            self.recorder.addTrack(track)
-
-                    offer = RTCSessionDescription(sdp=join_response['sdp'], type=join_response['type'])
-                    print("Setting remote description...")
-                    await self.peer_connection.setRemoteDescription(offer)
-                    print("Remote description set.")
-                    answer = await self.peer_connection.createAnswer()
-                    print("Creating answer...")
-                    await self.peer_connection.setLocalDescription(answer)
-                    print("Local description set.")
-                    print(f"Joined room {room_name} successfully!")
-                else:
-                    print("Join response did not contain SDP information.")
+            # Create and publish local audio track
+            source = rtc.AudioSource(44000, 1)
+            self.local_audio_track = rtc.LocalAudioTrack.create_audio_track(
+                "mic-audio", source)
+            options = rtc.TrackPublishOptions()
+            options.source = rtc.TrackSource.SOURCE_MICROPHONE
+            await self.room.local_participant.publish_track(self.local_audio_track, options)
+            logging.info("Local audio track published")
         except Exception as e:
-            print(f"Exception occurred: {e}")
+            logging.error(f"Exception occurred: {e}")
 
-def start_loop(loop):
-    asyncio.set_event_loop(loop)
-    print("Starting asyncio event loop...")
-    loop.run_forever()
+    def on_disconnect_clicked(self, button):
+        print("Disconnect button clicked...")
+        asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
+
+    async def disconnect(self):
+        if self.local_audio_track:
+            await self.local_audio_track.stop()
+            self.local_audio_track = None
+            logging.info("Local audio track stopped")
+        if self.room:
+            await self.room.disconnect()
+            self.room = None
+            logging.info("Room disconnected.")
+        self.update_status("Disconnected", "black")
+
+    def update_status(self, status, color):
+        self.status_label.set_text(status)
+        context = self.status_label.get_style_context()
+        context.remove_class("connected")
+        context.remove_class("disconnected")
+        if color == "red":
+            context.add_class("connected")
+        else:
+            context.add_class("disconnected")
 
 if __name__ == "__main__":
-    loop = asyncio.new_event_loop()
-    threading.Thread(target=start_loop, args=(loop,), daemon=True).start()
-
     app = LiveKitApp()
+
+    # Add CSS for connected and disconnected classes
+    css = """
+    .connected {
+        color: red;
+    }
+    .disconnected {
+        color: black;
+    }
+    """
+    css_provider = Gtk.CssProvider()
+    css_provider.load_from_data(css.encode())
+    display = Gdk.Display.get_default()
+    Gtk.StyleContext.add_provider_for_display(display, css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
     app.run(None)
 
