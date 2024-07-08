@@ -11,6 +11,7 @@ from faster_whisper import WhisperModel
 from livekit import rtc
 import uvicorn
 import argparse
+import logging
 
 # Constants for audio settings
 SAMPLE_RATE = 22050  # WebRTC standard sample rate
@@ -108,6 +109,16 @@ async def process_audio_chunk(data):
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         print(f"Transcription: {transcript}")
 
+        # Send the transcription text to the transcription clients
+        for client in send_transcript_clients:
+            try:
+                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
+            except WebSocketDisconnect:
+                send_transcript_clients.remove(client)
+
+        # Send the transcription text to LiveKit chat
+        await chat_manager.send_message(transcript)
+
         if not text_only:
             # Convert the transcribed text to speech with the default speaker and language
             tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
@@ -124,13 +135,6 @@ async def process_audio_chunk(data):
 
             # Send TTS audio to LiveKit room
             await publish_tts_to_livekit(audio_bytes)
-
-        # Send the transcription text to the transcription clients
-        for client in send_transcript_clients:
-            try:
-                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
-            except WebSocketDisconnect:
-                send_transcript_clients.remove(client)
     except Exception as e:
         print("Error processing audio chunk:", e)
 
@@ -146,7 +150,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
     parser.add_argument('--livekit_url', type=str, required=True, help='LiveKit server URL')
     parser.add_argument('--livekit_token', type=str, required=True, help='LiveKit authentication token')
-
     args = parser.parse_args()
 
     # Initialize LiveKit Room
@@ -156,6 +159,7 @@ if __name__ == "__main__":
     async def initialize_livekit_room():
         global livekit_room
         global source
+        global chat_manager
         livekit_room = rtc.Room()
         await livekit_room.connect(args.livekit_url, args.livekit_token)
         print(f"Connected to LiveKit room: {livekit_room.name}")
@@ -168,10 +172,12 @@ if __name__ == "__main__":
         await livekit_room.local_participant.publish_track(local_audio_track)
         print("Published TTS audio track to LiveKit room")
 
+        # Initialize ChatManager
+        chat_manager = rtc.ChatManager(livekit_room)
 
-    if not text_only:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(initialize_livekit_room())
+    # Always initialize the LiveKit room
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(initialize_livekit_room())
 
     uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)  # Increase the max size to 10MB, set ping interval and timeout
 
