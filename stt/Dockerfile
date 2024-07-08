@@ -30,8 +30,8 @@ COPY config.json /root/config.json
 RUN /opt/conda/bin/conda run -n stt_tts pip install --upgrade pip && \
     /opt/conda/bin/conda run -n stt_tts pip install -r /root/requirements.txt
 
-# Pre-download Whisper
-RUN /opt/conda/bin/conda run -n stt_tts python -c "import whisper; model = whisper.load_model('small')"
+# Pre-download Faster Whisper
+RUN /opt/conda/bin/conda run -n stt_tts python -c "from faster_whisper import WhisperModel; model = WhisperModel('medium')"
 
 # Install other system dependencies
 RUN apt -y install meson dpkg gzip tar libmount-dev flex bison bzip2 vim git build-essential cmake ninja-build pkg-config libssl-dev libx264-dev libopus-dev libvpx-dev nasm x264 libxml2-dev && \
