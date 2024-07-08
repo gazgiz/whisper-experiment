@@ -1,17 +1,21 @@
+import asyncio
+import logging
+from signal import SIGINT, SIGTERM
+from typing import Union
+import os
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import numpy as np
 import json
-import asyncio
-from TTS.api import TTS
 import soundfile as sf
 import io
 import torch
 from faster_whisper import WhisperModel
-from livekit import rtc
+from TTS.api import TTS
+from livekit import api, rtc
 import uvicorn
 import argparse
-import logging
 
 # Constants for audio settings
 SAMPLE_RATE = 22050  # WebRTC standard sample rate
@@ -50,6 +54,7 @@ default_language = 'ko'
 
 # Store connections
 send_transcript_clients = []
+chat_manager = None  # Declare chat_manager as a global variable
 
 @app.get('/')
 async def get():
@@ -117,7 +122,9 @@ async def process_audio_chunk(data):
                 send_transcript_clients.remove(client)
 
         # Send the transcription text to LiveKit chat
-        await chat_manager.send_message(transcript)
+        global chat_manager
+        if chat_manager:
+            await chat_manager.send_message(transcript)  # Await the coroutine
 
         if not text_only:
             # Convert the transcribed text to speech with the default speaker and language
@@ -146,18 +153,141 @@ async def publish_tts_to_livekit(audio_data):
     # Send the audio data frame to LiveKit
     await source.capture_frame(audio_frame)
 
-async def handle_livekit_audio(track):
-    async for frame in track.recv():
-        audio_data = np.frombuffer(frame.data, dtype=np.int16)
-        await process_audio_chunk(audio_data)
+async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
+    @room.on("participant_connected")
+    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
+        logging.info(
+            "participant connected: %s %s", participant.sid, participant.identity
+        )
 
-async def send_text_to_livekit(text):
-    if livekit_room:
-        try:
-            await chat_manager.send_message(text)
-            logging.info("Message sent successfully")
-        except Exception as e:
-            logging.error(f"Failed to send message: {e}")
+    @room.on("participant_disconnected")
+    def on_participant_disconnected(participant: rtc.RemoteParticipant):
+        logging.info(
+            "participant disconnected: %s %s", participant.sid, participant.identity
+        )
+
+    @room.on("local_track_published")
+    def on_local_track_published(
+        publication: rtc.LocalTrackPublication,
+        track: Union[rtc.LocalAudioTrack, rtc.LocalVideoTrack],
+    ):
+        logging.info("local track published: %s", publication.sid)
+
+    @room.on("active_speakers_changed")
+    def on_active_speakers_changed(speakers: list[rtc.Participant]):
+        logging.info("active speakers changed: %s", speakers)
+
+    @room.on("local_track_unpublished")
+    def on_local_track_unpublished(publication: rtc.LocalTrackPublication):
+        logging.info("local track unpublished: %s", publication.sid)
+
+    @room.on("track_published")
+    def on_track_published(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info(
+            "track published: %s from participant %s (%s)",
+            publication.sid,
+            participant.sid,
+            participant.identity,
+        )
+
+    @room.on("track_unpublished")
+    def on_track_unpublished(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info("track unpublished: %s", publication.sid)
+
+    @room.on("track_subscribed")
+    def on_track_subscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ):
+        logging.info("track subscribed: %s", publication.sid)
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            print("Subscribed to an Audio Track")
+            audio_stream = rtc.AudioStream(track)
+
+            async def process_audio_stream():
+                async for audio_frame_event in audio_stream:
+                    audio_frame = audio_frame_event.frame
+                    audio_data = audio_frame.data  # Correctly access samples data
+                    audio_data = np.frombuffer(audio_data, dtype=np.int16)
+                    await process_audio_chunk(audio_data)
+
+            asyncio.create_task(process_audio_stream())
+         
+    @room.on("track_unsubscribed")
+    def on_track_unsubscribed(
+        track: rtc.Track,
+        publication: rtc.RemoteTrackPublication,
+        participant: rtc.RemoteParticipant,
+    ):
+        logging.info("track unsubscribed: %s", publication.sid)
+
+    @room.on("track_muted")
+    def on_track_muted(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info("track muted: %s", publication.sid)
+
+    @room.on("track_unmuted")
+    def on_track_unmuted(
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
+    ):
+        logging.info("track unmuted: %s", publication.sid)
+
+    @room.on("data_received")
+    def on_data_received(data: rtc.DataPacket):
+        logging.info("received data from %s: %s", data.participant.identity, data.data)
+
+    @room.on("connection_quality_changed")
+    def on_connection_quality_changed(
+        participant: rtc.Participant, quality: rtc.ConnectionQuality
+    ):
+        logging.info("connection quality changed for %s", participant.identity)
+
+    @room.on("track_subscription_failed")
+    def on_track_subscription_failed(
+        participant: rtc.RemoteParticipant, track_sid: str, error: str
+    ):
+        logging.info("track subscription failed: %s %s", participant.identity, error)
+
+    @room.on("connection_state_changed")
+    def on_connection_state_changed(state: rtc.ConnectionState):
+        logging.info("connection state changed: %s", state)
+
+    @room.on("connected")
+    def on_connected() -> None:
+        logging.info("connected")
+
+    @room.on("disconnected")
+    def on_disconnected() -> None:
+        logging.info("disconnected")
+
+    @room.on("reconnecting")
+    def on_reconnecting() -> None:
+        logging.info("reconnecting")
+
+    @room.on("reconnected")
+    def on_reconnected() -> None:
+        logging.info("reconnected")
+
+    await room.connect(livekit_url, livekit_token)
+    logging.info("connected to room %s", room.name)
+    logging.info("participants: %s", room.participants)
+
+    # Initialize ChatManager
+    global chat_manager
+    chat_manager = rtc.ChatManager(room)
+    if not chat_manager:
+        print("Failed to create chat manager")
+
+    # Run the FastAPI server concurrently with LiveKit connection
+    config = uvicorn.Config(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
@@ -165,40 +295,24 @@ if __name__ == "__main__":
     parser.add_argument('--livekit_token', type=str, required=True, help='LiveKit authentication token')
     args = parser.parse_args()
 
-    # Initialize LiveKit Room
-    livekit_room = None
-    source = None  # Declare source at the top level to be accessible in the function
-    chat_manager = None
+    logging.basicConfig(
+        level=logging.INFO,
+        handlers=[logging.FileHandler("basic_room.log"), logging.StreamHandler()],
+    )
 
-    async def initialize_livekit_room():
-        global livekit_room
-        global source
-        global chat_manager
-        livekit_room = rtc.Room()
-        await livekit_room.connect(args.livekit_url, args.livekit_token)
-        print(f"Connected to LiveKit room: {livekit_room.name}")
-
-        # Create the audio source and track
-        source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
-        local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
-
-        # Publish the audio track to the room
-        await livekit_room.local_participant.publish_track(local_audio_track)
-        print("Published TTS audio track to LiveKit room")
-
-        # Initialize ChatManager
-        chat_manager = rtc.ChatManager(livekit_room)
-
-        # Handle incoming audio tracks
-        @livekit_room.on("trackSubscribed")
-        async def on_track_subscribed(track, publication, participant):
-            if isinstance(track, rtc.RemoteAudioTrack):
-                print(f"Subscribed to audio track: {track.name}")
-                asyncio.create_task(handle_livekit_audio(track))
-
-    # Always initialize the LiveKit room
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(initialize_livekit_room())
+    room = rtc.Room(loop=loop)
 
-    uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)  # Increase the max size to 10MB, set ping interval and timeout
+    async def cleanup():
+        await room.disconnect()
+        loop.stop()
+
+    asyncio.ensure_future(main(room, args.livekit_url, args.livekit_token))
+    for signal in [SIGINT, SIGTERM]:
+        loop.add_signal_handler(signal, lambda: asyncio.ensure_future(cleanup()))
+
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
 
