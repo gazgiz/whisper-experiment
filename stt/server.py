@@ -146,6 +146,19 @@ async def publish_tts_to_livekit(audio_data):
     # Send the audio data frame to LiveKit
     await source.capture_frame(audio_frame)
 
+async def handle_livekit_audio(track):
+    async for frame in track.recv():
+        audio_data = np.frombuffer(frame.data, dtype=np.int16)
+        await process_audio_chunk(audio_data)
+
+async def send_text_to_livekit(text):
+    if livekit_room:
+        try:
+            await chat_manager.send_message(text)
+            logging.info("Message sent successfully")
+        except Exception as e:
+            logging.error(f"Failed to send message: {e}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
     parser.add_argument('--livekit_url', type=str, required=True, help='LiveKit server URL')
@@ -155,6 +168,7 @@ if __name__ == "__main__":
     # Initialize LiveKit Room
     livekit_room = None
     source = None  # Declare source at the top level to be accessible in the function
+    chat_manager = None
 
     async def initialize_livekit_room():
         global livekit_room
@@ -174,6 +188,13 @@ if __name__ == "__main__":
 
         # Initialize ChatManager
         chat_manager = rtc.ChatManager(livekit_room)
+
+        # Handle incoming audio tracks
+        @livekit_room.on("trackSubscribed")
+        async def on_track_subscribed(track, publication, participant):
+            if isinstance(track, rtc.RemoteAudioTrack):
+                print(f"Subscribed to audio track: {track.name}")
+                asyncio.create_task(handle_livekit_audio(track))
 
     # Always initialize the LiveKit room
     loop = asyncio.get_event_loop()
