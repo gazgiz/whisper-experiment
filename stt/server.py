@@ -168,8 +168,10 @@ if __name__ == "__main__":
         await livekit_room.local_participant.publish_track(local_audio_track)
         print("Published TTS audio track to LiveKit room")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(initialize_livekit_room())
+
+    if not text_only:
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(initialize_livekit_room())
 
     uvicorn.run(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)  # Increase the max size to 10MB, set ping interval and timeout
 
