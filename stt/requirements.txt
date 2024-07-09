@@ -11,3 +11,4 @@ sounddevice
 webrtcvad
 livekit
 livekit-api
+pysilero-vad

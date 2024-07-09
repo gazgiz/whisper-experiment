@@ -16,6 +16,7 @@ from TTS.api import TTS
 from livekit import api, rtc
 import uvicorn
 import argparse
+from pysilero_vad import SileroVoiceActivityDetector
 
 # Constants for audio settings
 SAMPLE_RATE = 22050  # WebRTC standard sample rate
@@ -52,6 +53,9 @@ if not text_only:
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
 default_language = 'ko'
 
+# Initialize Silero VAD
+vad = SileroVoiceActivityDetector()
+
 # Store connections
 send_transcript_clients = []
 chat_manager = None  # Declare chat_manager as a global variable
@@ -73,7 +77,7 @@ async def receive_audio_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
-        print(f"Exception: {e}")
+        print(f"Exception in receive_audio_endpoint: {e}")
     finally:
         try:
             await websocket.close()
@@ -90,7 +94,7 @@ async def send_transcript_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("WebSocket disconnected")
     except Exception as e:
-        print(f"Exception: {e}")
+        print(f"Exception in send_transcript_endpoint: {e}")
     finally:
         if websocket in send_transcript_clients:
             send_transcript_clients.remove(websocket)
@@ -108,6 +112,13 @@ async def process_audio_chunk(data):
         if len(audio_data) == 0:
             print("Received empty audio data")
             return
+
+        # Check for voice activity
+        #if vad(audio_data.astype(np.float32) / 32768.0) < 0.5:
+        #    print("Silence detected")
+        #    return
+
+        print("Speech detected")
 
         # Perform the transcription
         result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language="ko")
@@ -143,15 +154,18 @@ async def process_audio_chunk(data):
             # Send TTS audio to LiveKit room
             await publish_tts_to_livekit(audio_bytes)
     except Exception as e:
-        print("Error processing audio chunk:", e)
+        print(f"Error processing audio chunk: {e}")
 
 async def publish_tts_to_livekit(audio_data):
-    # Create and configure the audio frame
-    audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, len(audio_data))
-    np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
+    try:
+        # Create and configure the audio frame
+        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, len(audio_data))
+        np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
 
-    # Send the audio data frame to LiveKit
-    await source.capture_frame(audio_frame)
+        # Send the audio data frame to LiveKit
+        await source.capture_frame(audio_frame)
+    except Exception as e:
+        print(f"Error publishing TTS to LiveKit: {e}")
 
 async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
     @room.on("participant_connected")
@@ -210,19 +224,27 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
             audio_stream = rtc.AudioStream(track)
 
             async def process_audio_stream():
-                async for audio_frame_event in audio_stream:
-                    audio_frame = audio_frame_event.frame
-                    audio_data = audio_frame.data  # Correctly access samples data
-                    audio_data = np.frombuffer(audio_data, dtype=np.int16)
-                    await process_audio_chunk(audio_data)
+                try:
+                    async for audio_frame_event in audio_stream:
+                        audio_frame = audio_frame_event.frame
+                        audio_data = audio_frame.data  # Correctly access data attribute
+                        audio_data = np.frombuffer(audio_data, dtype=np.int16)
+                        
+                        # Use VAD to detect voice activity
+                        #if vad(audio_data.astype(np.float32) / 32768.0) >= 0.5:
+                        #    print("Speech detected")
+                        await process_audio_chunk(audio_data)
+                        #else:
+                        #    print("Silence detected")
+                except Exception as e:
+                    print(f"Error processing audio stream: {e}")
 
             asyncio.create_task(process_audio_stream())
-         
+
     @room.on("track_unsubscribed")
     def on_track_unsubscribed(
         track: rtc.Track,
-        publication: rtc.RemoteTrackPublication,
-        participant: rtc.RemoteParticipant,
+        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
     ):
         logging.info("track unsubscribed: %s", publication.sid)
 
