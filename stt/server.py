@@ -3,7 +3,6 @@ import logging
 from signal import SIGINT, SIGTERM
 from typing import Union
 import os
-
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import numpy as np
@@ -168,49 +167,6 @@ async def publish_tts_to_livekit(audio_data):
         print(f"Error publishing TTS to LiveKit: {e}")
 
 async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
-    @room.on("participant_connected")
-    def on_participant_connected(participant: rtc.RemoteParticipant) -> None:
-        logging.info(
-            "participant connected: %s %s", participant.sid, participant.identity
-        )
-
-    @room.on("participant_disconnected")
-    def on_participant_disconnected(participant: rtc.RemoteParticipant):
-        logging.info(
-            "participant disconnected: %s %s", participant.sid, participant.identity
-        )
-
-    @room.on("local_track_published")
-    def on_local_track_published(
-        publication: rtc.LocalTrackPublication,
-        track: Union[rtc.LocalAudioTrack, rtc.LocalVideoTrack],
-    ):
-        logging.info("local track published: %s", publication.sid)
-
-    @room.on("active_speakers_changed")
-    def on_active_speakers_changed(speakers: list[rtc.Participant]):
-        logging.info("active speakers changed: %s", speakers)
-
-    @room.on("local_track_unpublished")
-    def on_local_track_unpublished(publication: rtc.LocalTrackPublication):
-        logging.info("local track unpublished: %s", publication.sid)
-
-    @room.on("track_published")
-    def on_track_published(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info(
-            "track published: %s from participant %s (%s)",
-            publication.sid,
-            participant.sid,
-            participant.identity,
-        )
-
-    @room.on("track_unpublished")
-    def on_track_unpublished(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info("track unpublished: %s", publication.sid)
 
     @room.on("track_subscribed")
     def on_track_subscribed(
@@ -241,61 +197,6 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
 
             asyncio.create_task(process_audio_stream())
 
-    @room.on("track_unsubscribed")
-    def on_track_unsubscribed(
-        track: rtc.Track,
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info("track unsubscribed: %s", publication.sid)
-
-    @room.on("track_muted")
-    def on_track_muted(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info("track muted: %s", publication.sid)
-
-    @room.on("track_unmuted")
-    def on_track_unmuted(
-        publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant
-    ):
-        logging.info("track unmuted: %s", publication.sid)
-
-    @room.on("data_received")
-    def on_data_received(data: rtc.DataPacket):
-        logging.info("received data from %s: %s", data.participant.identity, data.data)
-
-    @room.on("connection_quality_changed")
-    def on_connection_quality_changed(
-        participant: rtc.Participant, quality: rtc.ConnectionQuality
-    ):
-        logging.info("connection quality changed for %s", participant.identity)
-
-    @room.on("track_subscription_failed")
-    def on_track_subscription_failed(
-        participant: rtc.RemoteParticipant, track_sid: str, error: str
-    ):
-        logging.info("track subscription failed: %s %s", participant.identity, error)
-
-    @room.on("connection_state_changed")
-    def on_connection_state_changed(state: rtc.ConnectionState):
-        logging.info("connection state changed: %s", state)
-
-    @room.on("connected")
-    def on_connected() -> None:
-        logging.info("connected")
-
-    @room.on("disconnected")
-    def on_disconnected() -> None:
-        logging.info("disconnected")
-
-    @room.on("reconnecting")
-    def on_reconnecting() -> None:
-        logging.info("reconnecting")
-
-    @room.on("reconnected")
-    def on_reconnected() -> None:
-        logging.info("reconnected")
-
     await room.connect(livekit_url, livekit_token)
     logging.info("connected to room %s", room.name)
     logging.info("participants: %s", room.participants)
@@ -319,7 +220,7 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        handlers=[logging.FileHandler("basic_room.log"), logging.StreamHandler()],
+        handlers=[logging.FileHandler("uam_server.log"), logging.StreamHandler()],
     )
 
     loop = asyncio.get_event_loop()
