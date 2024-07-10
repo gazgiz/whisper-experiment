@@ -1,35 +1,57 @@
+import argparse
 import asyncio
-import websockets
-import sounddevice as sd
-import soundfile as sf
 import numpy as np
+import sounddevice as sd
 import webrtcvad
 import collections
-import io
 import json
+import logging
+import wave
+import os
+from livekit import rtc
+
+logging.basicConfig(level=logging.INFO)
+
+SAMPLE_RATE = 16000  # microphone standard sample rate
+NUM_CHANNELS = 1
 
 is_recording = False
-recorded_audio = []
-audio_clip_number = 0
+livekit_room = None
+livekit_source = None
 
 async def receive_transcription_from_server(uri):
+    import websockets
     while True:
         try:
             async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
-                print("Listening for transcription from server...")
+                logging.info("Listening for transcription from server...")
                 while True:
                     message = await websocket.recv()
                     if isinstance(message, str):
                         if message.strip():  # Only process non-empty messages
                             message_data = json.loads(message)
                             if message_data["type"] == "transcription":
-                                print(f"Transcription received: {message_data['text']}")
+                                logging.info(f"Transcription received: {message_data['text']}")
         except websockets.ConnectionClosedError as e:
-            print(f"Connection closed with error: {e}")
+            logging.error(f"Connection closed with error: {e}")
             await asyncio.sleep(5)  # Wait before reconnecting
         except Exception as e:
-            print(f"Exception: {e}")
+            logging.error(f"Exception: {e}")
             await asyncio.sleep(5)  # Wait before reconnecting
+
+async def connect_to_livekit(livekit_url, livekit_token):
+    global livekit_room, livekit_source
+    livekit_room = rtc.Room()
+    await livekit_room.connect(livekit_url, livekit_token)
+    logging.info(f"Connected to LiveKit room: {livekit_room.name}")
+
+    # Create the audio source and track
+    livekit_source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+    audio_track = rtc.LocalAudioTrack.create_audio_track("audio-track", livekit_source)
+
+    # Publish the audio track to the room
+    await livekit_room.local_participant.publish_track(audio_track)
+    logging.info("Published audio track to LiveKit room")
 
 async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration_ms=300, vad=None):
     global is_recording
@@ -41,12 +63,12 @@ async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration
     stream = sd.InputStream(samplerate=sample_rate, channels=1, dtype="int16")
     stream.start()
 
-    print("Recording... Press Ctrl+C to stop.")
+    logging.info("Recording... Press Ctrl+C to stop.")
 
     try:
         while True:
-            frame = stream.read(int(sample_rate * frame_duration_ms / 1000))[0].tobytes()
-            is_speech = vad.is_speech(frame, sample_rate)
+            frame = stream.read(int(sample_rate * frame_duration_ms / 1000))[0]
+            is_speech = vad.is_speech(frame.tobytes(), sample_rate)
 
             if not triggered:
                 ring_buffer.append((frame, is_speech))
@@ -68,51 +90,65 @@ async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration
     finally:
         stream.close()
 
-    print("Recording complete")
+    logging.info("Recording complete")
     is_recording = False
-    return b"".join(voiced_frames)
+    return b"".join([f.tobytes() for f in voiced_frames])
 
 async def send_audio_to_server(audio_data, sample_rate=16000):
+    import websockets
     uri = "ws://localhost:8000/receive_audio"
     retries = 5
 
     while retries > 0:
         try:
             async with websockets.connect(uri, ping_interval=60, ping_timeout=60, close_timeout=20) as websocket:
-                # Convert audio data to bytes
-                audio_bytes = audio_data
-
                 # Send audio data
-                await websocket.send(audio_bytes)
-                print("Audio sent to server")
+                await websocket.send(audio_data)
+                logging.info("Audio sent to server")
                 return
         except (websockets.ConnectionClosedError, asyncio.TimeoutError) as e:
-            print(f"Connection error: {e}, retrying...")
+            logging.error(f"Connection error: {e}, retrying...")
             retries -= 1
             await asyncio.sleep(2)
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            logging.error(f"Unexpected error: {e}")
             await asyncio.sleep(2)
-    print("Failed to send audio to server after multiple attempts.")
+    logging.error("Failed to send audio to server after multiple attempts.")
 
-async def main():
-    global is_recording
-    sample_rate = 16000  # Sample rate in Hz
+async def main(livekit_url, livekit_token):
+    if livekit_url and livekit_token:
+        await connect_to_livekit(livekit_url, livekit_token)
+
     vad = webrtcvad.Vad()
     vad.set_mode(1)  # 0: least aggressive, 3: most aggressive
 
     receive_transcript_uri = "ws://localhost:8000/send_transcript"
-
-    # Start the transcription listening coroutine
     receive_transcript_task = asyncio.create_task(receive_transcription_from_server(receive_transcript_uri))
 
-    print("Recording continuously...")
+    logging.info("Recording continuously...")
 
     while True:
-        audio_data = await record_audio(sample_rate=sample_rate, vad=vad)
-        send_audio_task = asyncio.create_task(send_audio_to_server(audio_data, sample_rate))
+        audio_data = await record_audio(sample_rate=SAMPLE_RATE, vad=vad)
+        
+        if livekit_url and livekit_token:
+            # Convert bytes back to int16 array for LiveKit
+            int16_audio_data = np.frombuffer(audio_data, dtype=np.int16)
+            send_audio_task = asyncio.create_task(send_audio_to_livekit(int16_audio_data))
+        else:
+            send_audio_task = asyncio.create_task(send_audio_to_server(audio_data))
+        
         await send_audio_task  # Wait for the send task to complete before starting a new recording
 
+async def send_audio_to_livekit(audio_data):
+   audio_frame = rtc.AudioFrame.create(16000, NUM_CHANNELS, len(audio_data))
+   np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
+   await livekit_source.capture_frame(audio_frame)
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description='LiveKit Audio Client.')
+    parser.add_argument('--livekit_url', type=str, help='LiveKit server URL')
+    parser.add_argument('--livekit_token', type=str, help='LiveKit authentication token')
+    args = parser.parse_args()
+
+    asyncio.run(main(args.livekit_url, args.livekit_token))
 

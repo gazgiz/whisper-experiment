@@ -116,8 +116,7 @@ async def process_audio_chunk(data):
         #if vad(audio_data.astype(np.float32) / 32768.0) < 0.5:
         #    print("Silence detected")
         #    return
-
-        print("Speech detected")
+        #print("Speech detected")
 
         # Perform the transcription
         result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language="ko")
@@ -189,6 +188,7 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
                         # Use VAD to detect voice activity
                         #if vad(audio_data.astype(np.float32) / 32768.0) >= 0.5:
                         #    print("Speech detected")
+                        print("Audio received")
                         await process_audio_chunk(audio_data)
                         #else:
                         #    print("Silence detected")
