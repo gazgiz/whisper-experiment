@@ -18,6 +18,7 @@ NUM_CHANNELS = 1
 is_recording = False
 livekit_room = None
 livekit_source = None
+chat_manager = None
 
 async def receive_transcription_from_server(uri):
     import websockets
@@ -40,7 +41,7 @@ async def receive_transcription_from_server(uri):
             await asyncio.sleep(5)  # Wait before reconnecting
 
 async def connect_to_livekit(livekit_url, livekit_token):
-    global livekit_room, livekit_source
+    global livekit_room, livekit_source, chat_manager
     livekit_room = rtc.Room()
     await livekit_room.connect(livekit_url, livekit_token)
     logging.info(f"Connected to LiveKit room: {livekit_room.name}")
@@ -52,6 +53,14 @@ async def connect_to_livekit(livekit_url, livekit_token):
     # Publish the audio track to the room
     await livekit_room.local_participant.publish_track(audio_track)
     logging.info("Published audio track to LiveKit room")
+
+    # Initialize ChatManager to receive messages
+    chat_manager = rtc.ChatManager(livekit_room)
+
+    def on_message(chat_message):
+        logging.info(f"Chat message received from {chat_message.participant.identity}: {chat_message.message}")
+
+    chat_manager.on_message(on_message)
 
 async def record_audio(sample_rate=16000, frame_duration_ms=30, padding_duration_ms=300, vad=None):
     global is_recording
@@ -122,8 +131,9 @@ async def main(livekit_url, livekit_token):
     vad = webrtcvad.Vad()
     vad.set_mode(1)  # 0: least aggressive, 3: most aggressive
 
-    receive_transcript_uri = "ws://localhost:8000/send_transcript"
-    receive_transcript_task = asyncio.create_task(receive_transcription_from_server(receive_transcript_uri))
+    if not (livekit_url and livekit_token):
+        receive_transcript_uri = "ws://localhost:8000/send_transcript"
+        receive_transcript_task = asyncio.create_task(receive_transcription_from_server(receive_transcript_uri))
 
     logging.info("Recording continuously...")
 
@@ -140,9 +150,9 @@ async def main(livekit_url, livekit_token):
         await send_audio_task  # Wait for the send task to complete before starting a new recording
 
 async def send_audio_to_livekit(audio_data):
-   audio_frame = rtc.AudioFrame.create(16000, NUM_CHANNELS, len(audio_data))
-   np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
-   await livekit_source.capture_frame(audio_frame)
+    audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, len(audio_data))
+    np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
+    await livekit_source.capture_frame(audio_frame)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='LiveKit Audio Client.')
