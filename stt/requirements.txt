@@ -1,15 +1,10 @@
 TTS
 torchaudio
-fastapi
-uvicorn
 faster_whisper
 numpy
 websockets
-scipy
-aiohttp
-sounddevice
-webrtcvad
 livekit
 livekit-api
 pysilero-vad
 librosa
+pyaudio
