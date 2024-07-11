@@ -1,169 +1,105 @@
 import asyncio
 import logging
 from signal import SIGINT, SIGTERM
-from typing import Union
-import os
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
 import numpy as np
 import json
 import soundfile as sf
-import io
 import torch
 from faster_whisper import WhisperModel
 from TTS.api import TTS
 from livekit import api, rtc
-import uvicorn
 import argparse
+import librosa
+import datetime
+import collections
 from pysilero_vad import SileroVoiceActivityDetector
 
 # Constants for audio settings
-SAMPLE_RATE = 22050  # WebRTC standard sample rate
+SAMPLE_RATE = 48000  # WebRTC default sample rate
+TARGET_SAMPLE_RATE = 16000  # Target sample rate for processing
 NUM_CHANNELS = 1
+AUDIO_DIR = "audio_segments"
 
-# Function to read the configuration file
+# Initialize VAD
+vad = SileroVoiceActivityDetector()
+vad_chunk_size = vad.chunk_samples()
+
 def load_config():
     with open('config.json', 'r') as file:
         config = json.load(file)
     return config
 
-app = FastAPI()
-
 config = load_config()
 use_gpu = config['use_gpu']
 text_only = config['text_only']
 
-# Load the Whisper model
+# Load Whisper model
 device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 print("Using GPU" if device == "cuda" else "Using CPU")
-
 model_size = "medium"
 if device == "cuda":
     model = WhisperModel(model_size, device="cuda", compute_type="float16")
 else:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
-# Load the Coqui TTS model
+# Load Coqui TTS model
 if not text_only:
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device)
-
-# Set default speaker ID and language
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
 default_language = 'ko'
 
-# Initialize Silero VAD
-vad = SileroVoiceActivityDetector()
-
-# Store connections
-send_transcript_clients = []
 chat_manager = None  # Declare chat_manager as a global variable
 
-@app.get('/')
-async def get():
-    with open('index.html') as f:
-        return HTMLResponse(f.read())
+# Ring buffer for accumulating WebRTC audio data
+audio_buffer = collections.deque()
+resampled_buffer = collections.deque()
+clip_buffer = collections.deque()
+active_clip = False
+silence_counter = 0
+clip_silence_trigger_counter = 8
 
-@app.websocket("/receive_audio")
-async def receive_audio_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            message = await websocket.receive()
-            if "bytes" in message:
-                data = message["bytes"]
-                await process_audio_chunk(data)
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
-    except Exception as e:
-        print(f"Exception in receive_audio_endpoint: {e}")
-    finally:
-        try:
-            await websocket.close()
-        except RuntimeError:
-            pass  # WebSocket already closed
+async def process_audio_chunk(data, source="websocket"):
+    global audio_buffer, resampled_buffer, clip_buffer, active_clip, silence_counter
+    global clip_silence_trigger_counter, chat_manager
 
-@app.websocket("/send_transcript")
-async def send_transcript_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    send_transcript_clients.append(websocket)
-    try:
-        while True:
-            await asyncio.sleep(1)  # Keep connection open
-    except WebSocketDisconnect:
-        print("WebSocket disconnected")
-    except Exception as e:
-        print(f"Exception in send_transcript_endpoint: {e}")
-    finally:
-        if websocket in send_transcript_clients:
-            send_transcript_clients.remove(websocket)
-        try:
-            await websocket.close()
-        except RuntimeError:
-            pass  # WebSocket already closed
-
-async def process_audio_chunk(data):
     try:
         # Convert the received audio data to numpy array
         audio_data = np.frombuffer(data, dtype=np.int16)
 
         # Ensure the audio data is at the target sample rate
         if len(audio_data) == 0:
-            print("Received empty audio data")
+            logging.warning("Received empty audio data")
             return
 
-        # Check for voice activity
-        #if vad(audio_data.astype(np.float32) / 32768.0) < 0.5:
-        #    print("Silence detected")
-        #    return
-        #print("Speech detected")
+        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=SAMPLE_RATE, target_sr=TARGET_SAMPLE_RATE)
+        # Add the resampled audio data to the buffer
+        resampled_buffer.extend(resampled_chunk.astype(np.int16))
 
-        # Perform the transcription
-        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language="ko")
-        transcript = " ".join([seg.text.strip() for seg in list(result)])
-        print(f"Transcription: {transcript}")
-
-        # Send the transcription text to the transcription clients
-        for client in send_transcript_clients:
-            try:
-                await client.send_text(json.dumps({"type": "transcription", "text": transcript}))
-            except WebSocketDisconnect:
-                send_transcript_clients.remove(client)
-
-        # Send the transcription text to LiveKit chat
-        global chat_manager
-        if chat_manager:
-            await chat_manager.send_message(transcript)  # Await the coroutine
-
-        if not text_only:
-            # Convert the transcribed text to speech with the default speaker and language
-            tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
-
-            # Write the TTS output to a buffer at the correct sample rate
-            with io.BytesIO() as buffer:
-                sf.write(buffer, tts_output, samplerate=SAMPLE_RATE, format='WAV')
-                buffer.seek(0)
-                audio_bytes, sr = sf.read(buffer, dtype='int16')
-
-            # Ensure the audio data is in the correct format
-            if sr != SAMPLE_RATE:
-                raise ValueError("Sample rate mismatch in audio processing")
-
-            # Send TTS audio to LiveKit room
-            await publish_tts_to_livekit(audio_bytes)
+        # Process the resampled buffer in chunks for VAD
+        while len(resampled_buffer) >= vad_chunk_size:
+            vad_chunk = [resampled_buffer.popleft() for _ in range(vad_chunk_size)]
+            vad_chunk = np.array(vad_chunk)
+            # Apply VAD
+            if vad.process_chunk(vad_chunk.tobytes()) >= 0.5:
+                #logging.info(f"Added chunk of length {len(vad_chunk)} to clip")
+                clip_buffer.extend(vad_chunk)
+                active_clip = True
+                silence_counter = 0
+            else:
+                silence_counter += 1
+                if active_clip and silence_counter > clip_silence_trigger_counter:
+                    # Perform the transcription
+                    result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
+                    transcript = " ".join([seg.text.strip() for seg in list(result)])
+                    print(f"Transcription: {transcript}")
+                    # Send the transcription text to LiveKit chat
+                    if chat_manager:
+                        await chat_manager.send_message(transcript)  # Await the coroutine
+                    clip_buffer.clear()
+                    active_clip = False
     except Exception as e:
-        print(f"Error processing audio chunk: {e}")
-
-async def publish_tts_to_livekit(audio_data):
-    try:
-        # Create and configure the audio frame
-        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, len(audio_data))
-        np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), audio_data)
-
-        # Send the audio data frame to LiveKit
-        await source.capture_frame(audio_frame)
-    except Exception as e:
-        print(f"Error publishing TTS to LiveKit: {e}")
+        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 
 async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
 
@@ -175,7 +111,7 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
     ):
         logging.info("track subscribed: %s", publication.sid)
         if track.kind == rtc.TrackKind.KIND_AUDIO:
-            print("Subscribed to an Audio Track")
+            logging.info("Subscribed to an Audio Track")
             audio_stream = rtc.AudioStream(track)
 
             async def process_audio_stream():
@@ -185,15 +121,10 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
                         audio_data = audio_frame.data  # Correctly access data attribute
                         audio_data = np.frombuffer(audio_data, dtype=np.int16)
                         
-                        # Use VAD to detect voice activity
-                        #if vad(audio_data.astype(np.float32) / 32768.0) >= 0.5:
-                        #    print("Speech detected")
-                        print("Audio received")
-                        await process_audio_chunk(audio_data)
-                        #else:
-                        #    print("Silence detected")
+                        # Process the received audio data
+                        await process_audio_chunk(audio_data, source="webrtc")
                 except Exception as e:
-                    print(f"Error processing audio stream: {e}")
+                    logging.error(f"Error processing audio stream: {e}", exc_info=True)
 
             asyncio.create_task(process_audio_stream())
 
@@ -205,12 +136,7 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
     global chat_manager
     chat_manager = rtc.ChatManager(room)
     if not chat_manager:
-        print("Failed to create chat manager")
-
-    # Run the FastAPI server concurrently with LiveKit connection
-    config = uvicorn.Config(app, host="0.0.0.0", port=8000, ws_max_size=10485760, ws_ping_interval=30, ws_ping_timeout=30)
-    server = uvicorn.Server(config)
-    await server.serve()
+        logging.error("Failed to create chat manager")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')

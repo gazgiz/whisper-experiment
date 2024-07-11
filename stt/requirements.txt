@@ -12,3 +12,4 @@ webrtcvad
 livekit
 livekit-api
 pysilero-vad
+librosa
