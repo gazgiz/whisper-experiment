@@ -251,8 +251,10 @@ class LiveKitApp(Gtk.Application):
     def on_disconnect_clicked(self, button):
         self.stop_event.set()
         for task in self.tasks:
-            task.cancel()
-        asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
+            if isinstance(task, asyncio.Task):
+                task.cancel()
+        disconnect_task = asyncio.run_coroutine_threadsafe(self.disconnect(), self.loop)
+        disconnect_task.result()  # Wait for disconnect to complete
 
     async def disconnect(self):
         await self.stop_tasks()
@@ -268,7 +270,7 @@ class LiveKitApp(Gtk.Application):
         self.stop_event.clear()
 
     async def stop_tasks(self):
-        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await asyncio.gather(*[task for task in self.tasks if isinstance(task, asyncio.Task)], return_exceptions=True)
         print("All tasks cancelled")
         self.tasks.clear()
 
