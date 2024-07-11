@@ -1,19 +1,22 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, GObject, Gdk, Pango
+from gi.repository import Gtk, Gdk
 import asyncio
 import threading
 import logging
 from livekit import rtc
 import numpy as np
 import pyaudio
+import os
+import json
 
-SAMPLE_RATE = 48000
+SAMPLE_RATE = 16000  # Microphone standard sample rate
 NUM_CHANNELS = 1
+CHUNK_SIZE = 1024  # Number of frames per buffer
+CONFIG_FILE = os.path.expanduser("~/.cache/livekit_config.json")
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
-
+logging.basicConfig(level=logging.INFO)
 
 class LiveKitApp(Gtk.Application):
 
@@ -22,6 +25,7 @@ class LiveKitApp(Gtk.Application):
         self.connect("activate", self.on_activate)
         self.room = None
         self.local_audio_track = None
+        self.chat_manager = None
         self.loop = asyncio.new_event_loop()
         self.stop_event = asyncio.Event()
         self.tasks = []
@@ -45,7 +49,6 @@ class LiveKitApp(Gtk.Application):
         url_label = Gtk.Label(label="LiveKit URL:")
         box.append(url_label)
         self.url_entry = Gtk.Entry()
-        self.url_entry.set_text("wss://jupiter7-rdxxacqa.livekit.cloud")
         self.url_entry.set_placeholder_text("Enter LiveKit URL")
         box.append(self.url_entry)
 
@@ -63,7 +66,6 @@ class LiveKitApp(Gtk.Application):
         room_label = Gtk.Label(label="Room Name:")
         box.append(room_label)
         self.room_entry = Gtk.Entry()
-        self.room_entry.set_text("SKT")
         self.room_entry.set_placeholder_text("Enter room name")
         box.append(self.room_entry)
 
@@ -81,64 +83,68 @@ class LiveKitApp(Gtk.Application):
         self.status_label = Gtk.Label(label="Disconnected")
         box.append(self.status_label)
 
+        # Chat Messages View
+        chat_label = Gtk.Label(label="Chat Messages:")
+        box.append(chat_label)
+        self.chat_view = Gtk.TextView()
+        self.chat_view.set_editable(False)
+        self.chat_view.set_cursor_visible(False)
+        self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        chat_scroll = Gtk.ScrolledWindow()
+        chat_scroll.set_min_content_height(200)
+        chat_scroll.set_child(self.chat_view)
+        box.append(chat_scroll)
+
+        # Load the last configuration if it exists
+        self.load_last_config()
+
         window.show()
 
+    def load_last_config(self):
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r") as file:
+                config = json.load(file)
+                self.url_entry.set_text(config.get("url", ""))
+                buffer = self.token_entry.get_buffer()
+                buffer.set_text(config.get("token", ""))
+                self.room_entry.set_text(config.get("room_name", ""))
+
+    def save_last_config(self, url, token, room_name):
+        config = {
+            "url": url,
+            "token": token,
+            "room_name": room_name
+        }
+        with open(CONFIG_FILE, "w") as file:
+            json.dump(config, file)
+
     def on_connect_clicked(self, button):
-        print("Connect button clicked...")
         url = self.url_entry.get_text()
         token_buffer = self.token_entry.get_buffer()
-        token = token_buffer.get_text(
-            token_buffer.get_start_iter(), token_buffer.get_end_iter(), False
-        )
+        token = token_buffer.get_text(token_buffer.get_start_iter(), token_buffer.get_end_iter(), False)
         room_name = self.room_entry.get_text()
-        print(f"URL: {url}")
-        # Print only the first 30 characters of the token for privacy
-        print(f"Token: {token[:30]}...")
-        print(f"Room name: {room_name}")
+        print(f"Connecting to {room_name} at {url}...")
+
+        # Save the configuration
+        self.save_last_config(url, token, room_name)
+
         task = asyncio.run_coroutine_threadsafe(
             self.join_room(url, token, room_name), self.loop
         )
         self.tasks.append(task)
 
-    async def publish_frames(self, source: rtc.AudioSource):
-        p = pyaudio.PyAudio()
-
-        # Open stream
-        stream = p.open(format=pyaudio.paInt16,
-                        channels=NUM_CHANNELS,
-                        rate=SAMPLE_RATE,
-                        input=True,
-                        frames_per_buffer=480)
-
-        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, 480)
-        audio_data = np.frombuffer(audio_frame.data, dtype=np.int16)
-
-        try:
-            while not self.stop_event.is_set():
-                # Read data from microphone
-                mic_data = stream.read(480)
-                np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
-                await source.capture_frame(audio_frame)
-        except asyncio.CancelledError:
-            print("publish_frames cancelled")
-        finally:
-            print("Stopping publish_frames")
-            # Close stream
-            stream.stop_stream()
-            stream.close()
-            p.terminate()
-
     async def join_room(self, url, token, room_name):
-        print("Attempting to join room...")
-        self.room = rtc.Room()
+        global livekit_room, livekit_source, chat_manager
 
-        @self.room.on("participant_connected")
+        livekit_room = rtc.Room()
+
+        @livekit_room.on("participant_connected")
         def on_participant_connected(participant: rtc.RemoteParticipant):
             logging.info(
                 "Participant connected: %s %s", participant.sid, participant.identity
             )
 
-        @self.room.on("track_subscribed")
+        @livekit_room.on("track_subscribed")
         async def on_track_subscribed(
             track: rtc.AudioTrack,
             publication: rtc.RemoteTrackPublication,
@@ -151,25 +157,64 @@ class LiveKitApp(Gtk.Application):
                 self.tasks.append(task)
 
         try:
-            await self.room.connect(url, token)
-            logging.info("Connected to room %s", self.room.name)
+            await livekit_room.connect(url, token)
+            logging.info(f"Connected to LiveKit room: {livekit_room.name}")
             self.update_status("Connected", "red")
 
-            # Create and publish local audio track
-            source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
-            self.local_audio_track = rtc.LocalAudioTrack.create_audio_track(
-                "mic-audio", source
-            )
-            options = rtc.TrackPublishOptions()
-            options.source = rtc.TrackSource.SOURCE_MICROPHONE
-            await self.room.local_participant.publish_track(
-                self.local_audio_track, options
-            )
-            logging.info("Local audio track published")
-            task = asyncio.create_task(self.publish_frames(source))
-            self.tasks.append(task)
+            # Create the audio source and track
+            livekit_source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+            audio_track = rtc.LocalAudioTrack.create_audio_track("audio-track", livekit_source)
+
+            # Publish the audio track to the room
+            await livekit_room.local_participant.publish_track(audio_track)
+            logging.info("Published audio track to LiveKit room")
+
+            # Initialize ChatManager to receive messages
+            chat_manager = rtc.ChatManager(livekit_room)
+
+            def on_message(chat_message):
+                logging.info(f"Chat message received from {chat_message.participant.identity}: {chat_message.message}")
+                self.show_chat_message(chat_message)
+
+            chat_manager.on_message(on_message)
+
+            # Additional logging to verify ChatManager setup
+            logging.info(f"ChatManager initialized for room: {livekit_room.name}")
+
+            # Start publishing frames
+            publish_task = asyncio.create_task(self.publish_frames(livekit_source))
+            self.tasks.append(publish_task)
+
         except Exception as e:
             logging.error(f"Exception occurred: {e}")
+
+    async def publish_frames(self, source):
+        p = pyaudio.PyAudio()
+
+        # Open stream
+        stream = p.open(format=pyaudio.paInt16,
+                        channels=NUM_CHANNELS,
+                        rate=SAMPLE_RATE,
+                        input=True,
+                        frames_per_buffer=CHUNK_SIZE)
+
+        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, CHUNK_SIZE)
+        audio_data = np.frombuffer(audio_frame.data, dtype=np.int16)
+
+        try:
+            while not self.stop_event.is_set():
+                # Read data from microphone
+                mic_data = stream.read(CHUNK_SIZE)
+                np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
+                await source.capture_frame(audio_frame)
+        except asyncio.CancelledError:
+            print("publish_frames cancelled")
+        finally:
+            print("Stopping publish_frames")
+            # Close stream
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
 
     async def play_audio(self, track):
         p = pyaudio.PyAudio()
@@ -199,8 +244,11 @@ class LiveKitApp(Gtk.Application):
             stream.close()
             p.terminate()
 
+    def show_chat_message(self, chat_message):
+        buffer = self.chat_view.get_buffer()
+        buffer.insert(buffer.get_end_iter(), f"From {chat_message.participant.identity}:\n{chat_message.message}\n")
+
     def on_disconnect_clicked(self, button):
-        print("Disconnect button clicked...")
         self.stop_event.set()
         for task in self.tasks:
             task.cancel()
@@ -245,6 +293,7 @@ if __name__ == "__main__":
     }
     .disconnected {
         color: black;
+    }
     """
     css_provider = Gtk.CssProvider()
     css_provider.load_from_data(css.encode())
@@ -254,4 +303,3 @@ if __name__ == "__main__":
     )
 
     app.run(None)
-
