@@ -3,6 +3,7 @@ import logging
 from signal import SIGINT, SIGTERM
 import numpy as np
 import json
+import io
 import soundfile as sf
 import torch
 from faster_whisper import WhisperModel
@@ -15,8 +16,9 @@ import collections
 from pysilero_vad import SileroVoiceActivityDetector
 
 # Constants for audio settings
-SAMPLE_RATE = 48000  # WebRTC default sample rate
-TARGET_SAMPLE_RATE = 16000  # Target sample rate for processing
+WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
+STT_SAMPLE_RATE = 16000  # Target sample rate for processing
+TTS_SAMPLE_RATE = 22050
 NUM_CHANNELS = 1
 AUDIO_DIR = "audio_segments"
 
@@ -50,6 +52,7 @@ default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the li
 default_language = 'ko'
 
 chat_manager = None  # Declare chat_manager as a global variable
+source = None
 
 # Ring buffer for accumulating WebRTC audio data
 audio_buffer = collections.deque()
@@ -58,6 +61,17 @@ clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
 clip_silence_trigger_counter = 8
+
+async def publish_tts_to_livekit(audio_data):
+    global source
+    # Create and configure the audio frame
+    resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=TTS_SAMPLE_RATE, target_sr=WEBRTC_SAMPLE_RATE)
+    resampled_buffer.extend(resampled_chunk.astype(np.int16))
+    audio_frame = rtc.AudioFrame.create(WEBRTC_SAMPLE_RATE, NUM_CHANNELS, len(resampled_buffer))
+    np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), resampled_buffer)
+
+    # Send the audio data frame to LiveKit
+    await source.capture_frame(audio_frame)
 
 async def process_audio_chunk(data, source="websocket"):
     global audio_buffer, resampled_buffer, clip_buffer, active_clip, silence_counter
@@ -72,7 +86,7 @@ async def process_audio_chunk(data, source="websocket"):
             logging.warning("Received empty audio data")
             return
 
-        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=SAMPLE_RATE, target_sr=TARGET_SAMPLE_RATE)
+        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=WEBRTC_SAMPLE_RATE, target_sr=STT_SAMPLE_RATE)
         # Add the resampled audio data to the buffer
         resampled_buffer.extend(resampled_chunk.astype(np.int16))
 
@@ -93,9 +107,18 @@ async def process_audio_chunk(data, source="websocket"):
                     result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
                     transcript = " ".join([seg.text.strip() for seg in list(result)])
                     print(f"Transcription: {transcript}")
-                    # Send the transcription text to LiveKit chat
                     if chat_manager:
-                        await chat_manager.send_message(transcript)  # Await the coroutine
+                        await chat_manager.send_message(transcript)
+
+                    if not text_only:
+                        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+                        with io.BytesIO() as buffer:
+                            sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
+                            buffer.seek(0)
+                            audio_bytes, sr = sf.read(buffer, dtype='int16')
+
+                        await publish_tts_to_livekit(audio_bytes)
+
                     clip_buffer.clear()
                     active_clip = False
     except Exception as e:
@@ -137,6 +160,15 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
     chat_manager = rtc.ChatManager(room)
     if not chat_manager:
         logging.error("Failed to create chat manager")
+
+    global source
+    # Create the audio source and track
+    source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
+    local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
+
+    # Publish the audio track to the room
+    await room.local_participant.publish_track(local_audio_track)
+    print("Published TTS audio track to LiveKit room")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
