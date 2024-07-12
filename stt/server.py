@@ -111,9 +111,9 @@ async def process_audio_chunk(data, source="websocket"):
                         await chat_manager.send_message(transcript)
 
                     if not text_only:
-                        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+                        tts_ttsput = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
                         with io.BytesIO() as buffer:
-                            sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
+                            sf.write(buffer, tts_ttsput, samplerate=TTS_SAMPLE_RATE, format='WAV')
                             buffer.seek(0)
                             audio_bytes, sr = sf.read(buffer, dtype='int16')
 
@@ -122,11 +122,11 @@ async def process_audio_chunk(data, source="websocket"):
                     clip_buffer.clear()
                     active_clip = False
     except Exception as e:
-        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
+        logging.error(f"Error processing audio chunk: {e}", exc_sttfo=True)
 
-async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
+async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, room_tts: rtc.Room, livekit_token_tts: str) -> None:
 
-    @room.on("track_subscribed")
+    @room_stt.on("track_subscribed")
     def on_track_subscribed(
         track: rtc.Track,
         publication: rtc.RemoteTrackPublication,
@@ -147,33 +147,37 @@ async def main(room: rtc.Room, livekit_url: str, livekit_token: str) -> None:
                         # Process the received audio data
                         await process_audio_chunk(audio_data, source="webrtc")
                 except Exception as e:
-                    logging.error(f"Error processing audio stream: {e}", exc_info=True)
+                    logging.error(f"Error processing audio stream: {e}", exc_sttfo=True)
 
             asyncio.create_task(process_audio_stream())
 
-    await room.connect(livekit_url, livekit_token)
-    logging.info("connected to room %s", room.name)
-    logging.info("participants: %s", room.participants)
+    await room_stt.connect(livekit_url, livekit_token_stt)
+    logging.info("connected to room %s", room_stt.name)
+    logging.info("participants: %s", room_stt.participants)
 
-    # Initialize ChatManager
     global chat_manager
-    chat_manager = rtc.ChatManager(room)
+    chat_manager = rtc.ChatManager(room_stt)
     if not chat_manager:
         logging.error("Failed to create chat manager")
+
+    await room_tts.connect(livekit_url, livekit_token_tts)
+    logging.info("connected to room %s", room_tts.name)
+    logging.info("participants: %s", room_tts.participants)
 
     global source
     # Create the audio source and track
     source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
     local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
 
-    # Publish the audio track to the room
-    await room.local_participant.publish_track(local_audio_track)
-    print("Published TTS audio track to LiveKit room")
+    # Publish the audio track to the room_tts
+    await room_tts.local_participant.publish_track(local_audio_track)
+    print("Published TTS audio track to LiveKit room_tts")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
     parser.add_argument('--livekit_url', type=str, required=True, help='LiveKit server URL')
-    parser.add_argument('--livekit_token', type=str, required=True, help='LiveKit authentication token')
+    parser.add_argument('--livekit_token_stt', type=str, required=True, help='LiveKit authentication token for STT audio')
+    parser.add_argument('--livekit_token_tts', type=str, required=True, help='LiveKit authentication token for TTS audio')
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -182,13 +186,15 @@ if __name__ == "__main__":
     )
 
     loop = asyncio.get_event_loop()
-    room = rtc.Room(loop=loop)
+    room_stt = rtc.Room(loop=loop)
+    room_tts = rtc.Room(loop=loop)
 
     async def cleanup():
-        await room.disconnect()
+        await room_stt.disconnect()
+        await room_tts.disconnect()
         loop.stop()
 
-    asyncio.ensure_future(main(room, args.livekit_url, args.livekit_token))
+    asyncio.ensure_future(main(args.livekit_url, room_stt, args.livekit_token_stt, room_tts, args.livekit_token_tts))
     for signal in [SIGINT, SIGTERM]:
         loop.add_signal_handler(signal, lambda: asyncio.ensure_future(cleanup()))
 
