@@ -11,7 +11,6 @@ from TTS.api import TTS
 from livekit import api, rtc
 import argparse
 import librosa
-import datetime
 import collections
 from pysilero_vad import SileroVoiceActivityDetector
 
@@ -62,12 +61,26 @@ active_clip = False
 silence_counter = 0
 clip_silence_trigger_counter = 8
 
+# Queue for TTS and STT transcripts
+transcript_queue = asyncio.Queue()
+stt_queue = asyncio.Queue()
+
+# GPU lock
+gpu_lock = asyncio.Lock()
+
+async def process_tts_queue():
+    while True:
+        transcript = await transcript_queue.get()
+        await process_tts(transcript)
+        transcript_queue.task_done()
+
 async def process_tts(transcript):
     try:
         if not transcript:
             raise ValueError("Transcript is empty. Define `text` for synthesis.")
 
-        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+        async with gpu_lock:
+            tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
 
         with io.BytesIO() as buffer:
             sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
@@ -85,8 +98,28 @@ async def process_tts(transcript):
         await source.capture_frame(audio_frame)
 
     except Exception as e:
-        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
+        logging.error(f"Error processing TTS: {e}", exc_info=True)
 
+async def process_stt_queue():
+    while True:
+        clip_buffer = await stt_queue.get()
+        await process_stt(clip_buffer)
+        stt_queue.task_done()
+
+async def process_stt(clip_buffer):
+    try:
+        async with gpu_lock:
+            # Perform the transcription
+            result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
+
+        transcript = " ".join([seg.text.strip() for seg in list(result)])
+        print(f"Transcription: {transcript}")
+        if chat_manager:
+            await chat_manager.send_message(transcript)
+        if do_tts:
+            await transcript_queue.put(transcript)  # Enqueue the transcript for TTS processing
+    except Exception as e:
+        logging.error(f"Error processing STT: {e}", exc_info=True)
 
 async def process_audio_chunk(data, source="websocket"):
     global audio_buffer, resampled_buffer, clip_buffer, active_clip, silence_counter
@@ -118,18 +151,11 @@ async def process_audio_chunk(data, source="websocket"):
             else:
                 silence_counter += 1
                 if active_clip and silence_counter > clip_silence_trigger_counter:
-                    # Perform the transcription
-                    result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
-                    transcript = " ".join([seg.text.strip() for seg in list(result)])
-                    print(f"Transcription: {transcript}")
-                    if chat_manager:
-                        await chat_manager.send_message(transcript)
-                    if do_tts:
-                        await (process_tts (transcript))
+                    await stt_queue.put(list(clip_buffer))  # Enqueue the clip buffer for STT processing
                     clip_buffer.clear()
                     active_clip = False
     except Exception as e:
-        logging.error(f"Error processing audio chunk: {e}", exc_sttfo=True)
+        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
 
 async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, room_tts: rtc.Room, livekit_token_tts: str) -> None:
 
@@ -154,7 +180,7 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
                         # Process the received audio data
                         await process_audio_chunk(audio_data, source="webrtc")
                 except Exception as e:
-                    logging.error(f"Error processing STT audio stream: {e}", exc_sttfo=True)
+                    logging.error(f"Error processing STT audio stream: {e}", exc_info=True)
 
             asyncio.create_task(process_audio_stream())
 
@@ -180,6 +206,10 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
         # Publish the audio track to the tts room
         await room_tts.local_participant.publish_track(local_audio_track)
         print("Published TTS audio track to LiveKit tts room")
+
+    # Start the STT and TTS processing tasks
+    asyncio.create_task(process_stt_queue())
+    asyncio.create_task(process_tts_queue())
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
@@ -213,4 +243,3 @@ if __name__ == "__main__":
         loop.run_forever()
     finally:
         loop.close()
-
