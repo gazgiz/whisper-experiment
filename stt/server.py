@@ -33,7 +33,7 @@ def load_config():
 
 config = load_config()
 use_gpu = config['use_gpu']
-text_only = config['text_only']
+do_tts = config['do_tts']
 
 # Load Whisper model
 device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
@@ -45,7 +45,7 @@ else:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
 # Load Coqui TTS model
-if not text_only:
+if do_tts:
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device)
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
@@ -110,7 +110,7 @@ async def process_audio_chunk(data, source="websocket"):
                     if chat_manager:
                         await chat_manager.send_message(transcript)
 
-                    if not text_only:
+                    if do_tts:
                         tts_ttsput = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
                         with io.BytesIO() as buffer:
                             sf.write(buffer, tts_ttsput, samplerate=TTS_SAMPLE_RATE, format='WAV')
@@ -134,7 +134,7 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
     ):
         logging.info("track subscribed: %s", publication.sid)
         if track.kind == rtc.TrackKind.KIND_AUDIO:
-            logging.info("Subscribed to an Audio Track")
+            logging.info("Subscribed to STT Audio Track")
             audio_stream = rtc.AudioStream(track)
 
             async def process_audio_stream():
@@ -147,7 +147,7 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
                         # Process the received audio data
                         await process_audio_chunk(audio_data, source="webrtc")
                 except Exception as e:
-                    logging.error(f"Error processing audio stream: {e}", exc_sttfo=True)
+                    logging.error(f"Error processing STT audio stream: {e}", exc_sttfo=True)
 
             asyncio.create_task(process_audio_stream())
 
@@ -160,18 +160,19 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
     if not chat_manager:
         logging.error("Failed to create chat manager")
 
-    await room_tts.connect(livekit_url, livekit_token_tts)
-    logging.info("connected to room %s", room_tts.name)
-    logging.info("participants: %s", room_tts.participants)
+    if do_tts:
+        await room_tts.connect(livekit_url, livekit_token_tts)
+        logging.info("connected to tts room %s", room_tts.name)
+        logging.info("participants: %s", room_tts.participants)
 
-    global source
-    # Create the audio source and track
-    source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
-    local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
+        global source
+        # Create the audio source and track
+        source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
+        local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
 
-    # Publish the audio track to the room_tts
-    await room_tts.local_participant.publish_track(local_audio_track)
-    print("Published TTS audio track to LiveKit room_tts")
+        # Publish the audio track to the room_tts
+        await room_tts.local_participant.publish_track(local_audio_track)
+        print("Published TTS audio track to LiveKit room_tts")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
@@ -187,11 +188,14 @@ if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
     room_stt = rtc.Room(loop=loop)
-    room_tts = rtc.Room(loop=loop)
+    room_tts = None
+    if do_tts:
+        room_tts = rtc.Room(loop=loop)
 
     async def cleanup():
         await room_stt.disconnect()
-        await room_tts.disconnect()
+        if room_tts:
+            await room_tts.disconnect()
         loop.stop()
 
     asyncio.ensure_future(main(args.livekit_url, room_stt, args.livekit_token_stt, room_tts, args.livekit_token_tts))
