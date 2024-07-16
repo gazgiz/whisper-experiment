@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04
 
 ARG ARCH
 
@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
 # Update and install basic dependencies including git and curl
 RUN apt update && apt -y upgrade && \
-    apt -y install tzdata software-properties-common git curl build-essential libssl-dev libffi-dev
+    apt -y install tzdata software-properties-common git curl build-essential libssl-dev libffi-dev portaudio19-dev
 
 # Install Miniconda
 RUN curl -LO https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh && \
@@ -59,6 +59,12 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
     /root/.cargo/bin/rustup default stable && \
     /root/.cargo/bin/cargo install cargo-c
 
+# Ensure pip is installed
+RUN apt install -y python3-pip
+
+# Upgrade Meson to the latest version
+RUN pip3 install --upgrade meson
+
 # Build and install gstreamer
 RUN cd /root/src/gstreamer && \
     git checkout -b 1.24.4 refs/tags/1.24.4 && \
@@ -76,8 +82,6 @@ RUN cd /root/src/gst-plugins-rs && \
 # Install GStreamer Python bindings
 RUN apt install -y python3-gi python3-gi-cairo gobject-introspection libgirepository1.0-dev gir1.2-gstreamer-1.0 gir1.2-gtk-3.0
 
-# Ensure pip is installed
-RUN apt install -y python3-pip
 
 # Install PyGObject via pip
 RUN pip install pygobject
