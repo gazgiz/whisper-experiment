@@ -35,18 +35,21 @@ use_gpu = config['use_gpu']
 do_tts = config['do_tts']
 
 # Load Whisper model
-device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
-print("Using GPU" if device == "cuda" else "Using CPU")
+# Note: force to CPU if do_tts is true
+device_stt = "cuda" if torch.cuda.is_available() and use_gpu and not do_tts else "cpu"
+print("STT using GPU" if device_stt == "cuda" else "STT using CPU")
 model_size = "medium"
-if device == "cuda":
+if device_stt == "cuda":
     model = WhisperModel(model_size, device="cuda", compute_type="float16")
 else:
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
 # Load Coqui TTS model
 if do_tts:
+    device_tts = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+    print("TTS using GPU" if device_tts == "cuda" else "TTS using CPU")
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-    tts.to(device)
+    tts.to(device_tts)
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
 default_language = 'ko'
 
@@ -65,9 +68,6 @@ clip_silence_trigger_counter = 8
 transcript_queue = asyncio.Queue()
 stt_queue = asyncio.Queue()
 
-# GPU lock
-gpu_lock = asyncio.Lock()
-
 async def process_tts_queue():
     while True:
         transcript = await transcript_queue.get()
@@ -79,8 +79,7 @@ async def process_tts(transcript):
         if not transcript:
             raise ValueError("Transcript is empty. Define `text` for synthesis.")
 
-        async with gpu_lock:
-            tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
 
         with io.BytesIO() as buffer:
             sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
@@ -108,11 +107,14 @@ async def process_stt_queue():
 
 async def process_stt(clip_buffer):
     try:
-        async with gpu_lock:
-            # Perform the transcription
-            result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
+        # Perform the transcription
+        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
 
         transcript = " ".join([seg.text.strip() for seg in list(result)])
+        # Check if the transcript is empty
+        if not transcript.strip():
+            print("Transcription is empty, skipping.")
+            return
         print(f"Transcription: {transcript}")
         if chat_manager:
             await chat_manager.send_message(transcript)
