@@ -39,7 +39,7 @@ print(f"Language set to {language}")
 
 # Load Whisper model
 # Note: force to CPU if do_tts is true
-device_stt = "cuda" if torch.cuda.is_available() and use_gpu and not do_tts else "cpu"
+device_stt = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 print("STT using GPU" if device_stt == "cuda" else "STT using CPU")
 model_size = "medium"
 if device_stt == "cuda":
@@ -49,7 +49,7 @@ else:
 
 # Load Coqui TTS model
 if do_tts:
-    device_tts = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+    device_tts = "cpu"
     print("TTS using GPU" if device_tts == "cuda" else "TTS using CPU")
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device_tts)
@@ -64,7 +64,7 @@ resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
-clip_silence_trigger_counter = 8
+clip_silence_trigger_counter = 10
 
 # Queue for TTS and STT transcripts
 transcript_queue = asyncio.Queue()
@@ -117,7 +117,7 @@ async def process_stt(clip_buffer):
         if not transcript.strip():
             print("Transcription is empty, skipping.")
             return
-        print(f"Transcription: {transcript}")
+        print(f"\nTranscription: {transcript}\n")
         if chat_manager:
             await chat_manager.send_message(transcript)
         if do_tts:
@@ -147,7 +147,7 @@ async def process_audio_chunk(data, source="websocket"):
             vad_chunk = [resampled_buffer.popleft() for _ in range(vad_chunk_size)]
             vad_chunk = np.array(vad_chunk)
             # Apply VAD
-            if vad.process_chunk(vad_chunk.tobytes()) >= 0.5:
+            if vad.process_chunk(vad_chunk.tobytes()) >= 0.7:
                 #logging.info(f"Added chunk of length {len(vad_chunk)} to clip")
                 clip_buffer.extend(vad_chunk)
                 active_clip = True
@@ -155,7 +155,11 @@ async def process_audio_chunk(data, source="websocket"):
             else:
                 silence_counter += 1
                 if active_clip and silence_counter > clip_silence_trigger_counter:
-                    await stt_queue.put(list(clip_buffer))  # Enqueue the clip buffer for STT processing
+                    clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
+                    if clip_length_seconds >= 1.0:
+                        await stt_queue.put(list(clip_buffer))  # Enqueue the clip buffer for STT processing
+                    else:
+                        logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
                     clip_buffer.clear()
                     active_clip = False
     except Exception as e:
