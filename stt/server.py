@@ -62,16 +62,31 @@ active_clip = False
 silence_counter = 0
 clip_silence_trigger_counter = 8
 
-async def publish_tts_to_livekit(audio_data):
-    global source
-    # Create and configure the audio frame
-    resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=TTS_SAMPLE_RATE, target_sr=WEBRTC_SAMPLE_RATE)
-    resampled_buffer.extend(resampled_chunk.astype(np.int16))
-    audio_frame = rtc.AudioFrame.create(WEBRTC_SAMPLE_RATE, NUM_CHANNELS, len(resampled_buffer))
-    np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), resampled_buffer)
+async def process_tts(transcript):
+    try:
+        if not transcript:
+            raise ValueError("Transcript is empty. Define `text` for synthesis.")
 
-    # Send the audio data frame to LiveKit
-    await source.capture_frame(audio_frame)
+        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+
+        with io.BytesIO() as buffer:
+            sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
+            buffer.seek(0)
+            audio_bytes, sr = sf.read(buffer, dtype='int16')
+
+        global source
+        # Create and configure the audio frame
+        resampled_chunk = librosa.resample(audio_bytes.astype(np.float32), orig_sr=TTS_SAMPLE_RATE, target_sr=WEBRTC_SAMPLE_RATE)
+        resampled_buffer.extend(resampled_chunk.astype(np.int16))
+        audio_frame = rtc.AudioFrame.create(WEBRTC_SAMPLE_RATE, NUM_CHANNELS, len(resampled_buffer))
+        np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), resampled_buffer)
+
+        # Send the audio data frame to LiveKit
+        await source.capture_frame(audio_frame)
+
+    except Exception as e:
+        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
+
 
 async def process_audio_chunk(data, source="websocket"):
     global audio_buffer, resampled_buffer, clip_buffer, active_clip, silence_counter
@@ -109,16 +124,8 @@ async def process_audio_chunk(data, source="websocket"):
                     print(f"Transcription: {transcript}")
                     if chat_manager:
                         await chat_manager.send_message(transcript)
-
                     if do_tts:
-                        tts_ttsput = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
-                        with io.BytesIO() as buffer:
-                            sf.write(buffer, tts_ttsput, samplerate=TTS_SAMPLE_RATE, format='WAV')
-                            buffer.seek(0)
-                            audio_bytes, sr = sf.read(buffer, dtype='int16')
-
-                        await publish_tts_to_livekit(audio_bytes)
-
+                        await (process_tts (transcript))
                     clip_buffer.clear()
                     active_clip = False
     except Exception as e:
@@ -152,7 +159,7 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
             asyncio.create_task(process_audio_stream())
 
     await room_stt.connect(livekit_url, livekit_token_stt)
-    logging.info("connected to room %s", room_stt.name)
+    logging.info("connected to stt room %s", room_stt.name)
     logging.info("participants: %s", room_stt.participants)
 
     global chat_manager
@@ -170,9 +177,9 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
         source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
         local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
 
-        # Publish the audio track to the room_tts
+        # Publish the audio track to the tts room
         await room_tts.local_participant.publish_track(local_audio_track)
-        print("Published TTS audio track to LiveKit room_tts")
+        print("Published TTS audio track to LiveKit tts room")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
