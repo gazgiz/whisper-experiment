@@ -33,6 +33,9 @@ def load_config():
 config = load_config()
 use_gpu = config['use_gpu']
 do_tts = config['do_tts']
+language = config['language']
+
+print(f"Language set to {language}")
 
 # Load Whisper model
 # Note: force to CPU if do_tts is true
@@ -51,7 +54,6 @@ if do_tts:
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device_tts)
 default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the list
-default_language = 'ko'
 
 chat_manager = None  # Declare chat_manager as a global variable
 source = None
@@ -79,7 +81,7 @@ async def process_tts(transcript):
         if not transcript:
             raise ValueError("Transcript is empty. Define `text` for synthesis.")
 
-        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=default_language)
+        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=language)
 
         with io.BytesIO() as buffer:
             sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
@@ -108,7 +110,7 @@ async def process_stt_queue():
 async def process_stt(clip_buffer):
     try:
         # Perform the transcription
-        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language="ko")
+        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language=language)
 
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         # Check if the transcript is empty
