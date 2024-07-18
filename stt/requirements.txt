@@ -2,9 +2,8 @@ TTS
 torchaudio
 faster_whisper
 numpy
-websockets
 livekit
 livekit-api
 pysilero-vad
 librosa
-pyaudio
+pygobject

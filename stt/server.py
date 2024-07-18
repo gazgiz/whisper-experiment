@@ -1,25 +1,29 @@
-import asyncio
+import threading
 import logging
-from signal import SIGINT, SIGTERM
-import numpy as np
 import json
 import io
-import soundfile as sf
+import queue
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from signal import SIGINT, SIGTERM
+import numpy as np
+from livekit import api, rtc
 import torch
 from faster_whisper import WhisperModel
 from TTS.api import TTS
-from livekit import api, rtc
-import argparse
 import librosa
 import collections
 from pysilero_vad import SileroVoiceActivityDetector
+import soundfile as sf
+import gi
+gi.require_version('Gst', '1.0')
+from gi.repository import Gst, GLib
 
 # Constants for audio settings
 WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
 STT_SAMPLE_RATE = 16000  # Target sample rate for processing
 TTS_SAMPLE_RATE = 22050
 NUM_CHANNELS = 1
-AUDIO_DIR = "audio_segments"
 
 # Initialize VAD
 vad = SileroVoiceActivityDetector()
@@ -34,11 +38,16 @@ config = load_config()
 use_gpu = config['use_gpu']
 do_tts = config['do_tts']
 language = config['language']
+livekit_url = config['livekit_url']
+stt_room_name = config['stt_room_name']
+api_key = config['api_key']
+api_secret = config['api_secret']
+livekit_token_stt = config['livekit_token_stt']
+livekit_token_tts = config['livekit_token_tts']
 
 print(f"Language set to {language}")
 
 # Load Whisper model
-# Note: force to CPU if do_tts is true
 device_stt = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 print("STT using GPU" if device_stt == "cuda" else "STT using CPU")
 model_size = "medium"
@@ -57,30 +66,86 @@ default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the li
 
 chat_manager = None  # Declare chat_manager as a global variable
 source = None
+event_loop = None  # Event loop for asyncio operations
+
+# Thread-safe queue for audio buffers
+audio_buffer_queue = queue.Queue()
 
 # Ring buffer for accumulating WebRTC audio data
-audio_buffer = collections.deque()
 resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
 clip_silence_trigger_counter = 10
 
-# Queue for TTS and STT transcripts
-transcript_queue = asyncio.Queue()
-stt_queue = asyncio.Queue()
+def process_audio_chunk(data):
+    global resampled_buffer, clip_buffer, active_clip, silence_counter
+    global clip_silence_trigger_counter, chat_manager, event_loop
 
-async def process_tts_queue():
-    while True:
-        transcript = await transcript_queue.get()
-        await process_tts(transcript)
-        transcript_queue.task_done()
-
-async def process_tts(transcript):
     try:
-        if not transcript:
-            raise ValueError("Transcript is empty. Define `text` for synthesis.")
+        # Convert the received audio data to numpy array
+  #      logging.info("Converting audio data to numpy array")
+        audio_data = np.frombuffer(data, dtype=np.int16)
+  #      logging.info(f"Audio data length: {len(audio_data)}")
 
+        # Ensure the audio data is at the target sample rate
+        if len(audio_data) == 0:
+            logging.warning("Received empty audio data")
+            return
+
+ #       logging.info("Resampling audio data")
+        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=WEBRTC_SAMPLE_RATE, target_sr=STT_SAMPLE_RATE)
+ #       logging.info(f"Resampled chunk length: {len(resampled_chunk)}")
+        # Add the resampled audio data to the buffer
+        resampled_buffer.extend(resampled_chunk.astype(np.int16))
+ #       logging.info(f"Resampled buffer length: {len(resampled_buffer)}")
+        # Process the resampled buffer in chunks for VAD
+        while len(resampled_buffer) >= vad_chunk_size:
+            vad_chunk = [resampled_buffer.popleft() for _ in range(vad_chunk_size)]
+            vad_chunk = np.array(vad_chunk)
+            # Apply VAD
+            if vad.process_chunk(vad_chunk.tobytes()) >= 0.7:
+ #               logging.info(f"Added chunk of length {len(vad_chunk)} to clip")
+                clip_buffer.extend(vad_chunk)
+                active_clip = True
+                silence_counter = 0
+            else:
+                silence_counter += 1
+                if active_clip and silence_counter > clip_silence_trigger_counter:
+                    clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
+                    if clip_length_seconds >= 1.0:
+ #                       logging.info(f"Processing clip buffer of length {clip_length_seconds} seconds")
+                        transcribe_and_tts_clip(list(clip_buffer))  # Process the clip buffer for STT and TTS
+                    else:
+                        logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
+                    clip_buffer.clear()
+                    active_clip = False
+    except Exception as e:
+        logging.error("Error processing audio chunk", exc_info=True)
+
+def transcribe_and_tts_clip(clip_buffer):
+    global chat_manager, event_loop
+
+    try:
+        # Perform the transcription
+        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language=language)
+
+        transcript = " ".join([seg.text.strip() for seg in list(result)])
+        # Check if the transcript is empty
+        if not transcript.strip():
+            logging.info("Transcription is empty, skipping.")
+            return
+        logging.info(f"\nTranscription: {transcript}\n")
+        if chat_manager:
+            # Use event loop to run the send_message coroutine
+            event_loop.call_soon_threadsafe(asyncio.create_task, chat_manager.send_message(transcript))
+        if do_tts:
+            synthesize_tts(transcript)
+    except Exception as e:
+        logging.error(f"Error processing STT: {e}")
+
+def synthesize_tts(transcript):
+    try:
         tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=language)
 
         with io.BytesIO() as buffer:
@@ -96,103 +161,45 @@ async def process_tts(transcript):
         np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), resampled_buffer)
 
         # Send the audio data frame to LiveKit
-        await source.capture_frame(audio_frame)
+        source.capture_frame(audio_frame)
 
     except Exception as e:
-        logging.error(f"Error processing TTS: {e}", exc_info=True)
+        logging.error(f"Error processing TTS: {e}")
 
-async def process_stt_queue():
+def process_audio_from_queue():
     while True:
-        clip_buffer = await stt_queue.get()
-        await process_stt(clip_buffer)
-        stt_queue.task_done()
+        data = audio_buffer_queue.get()
+        process_audio_chunk(data)
+        audio_buffer_queue.task_done()
 
-async def process_stt(clip_buffer):
+def on_message(bus, message, loop):
+    if message.type == Gst.MessageType.EOS:
+        print("End of stream")
+        loop.quit()
+    elif message.type == Gst.MessageType.ERROR:
+        err, debug = message.parse_error()
+        print(f"Error: {err}, {debug}")
+        loop.quit()
+    elif message.type == Gst.MessageType.WARNING:
+        err, debug = message.parse_warning()
+        print(f"Warning: {err}, {debug}")
+
+def on_handoff(fakesink, buffer, pad):
     try:
-        # Perform the transcription
-        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language=language)
-
-        transcript = " ".join([seg.text.strip() for seg in list(result)])
-        # Check if the transcript is empty
-        if not transcript.strip():
-            print("Transcription is empty, skipping.")
-            return
-        print(f"\nTranscription: {transcript}\n")
-        if chat_manager:
-            await chat_manager.send_message(transcript)
-        if do_tts:
-            await transcript_queue.put(transcript)  # Enqueue the transcript for TTS processing
+#        logging.info("Handoff received")
+        data = buffer.extract_dup(0, buffer.get_size())
+#        logging.info(f"Buffer extracted of size: {len(data)}")
+        audio_buffer_queue.put(data)  # Put the data into the thread-safe queue
     except Exception as e:
-        logging.error(f"Error processing STT: {e}", exc_info=True)
+        logging.error("Error in on_handoff", exc_info=True)
+    return Gst.FlowReturn.OK
 
-async def process_audio_chunk(data, source="websocket"):
-    global audio_buffer, resampled_buffer, clip_buffer, active_clip, silence_counter
-    global clip_silence_trigger_counter, chat_manager
-
-    try:
-        # Convert the received audio data to numpy array
-        audio_data = np.frombuffer(data, dtype=np.int16)
-
-        # Ensure the audio data is at the target sample rate
-        if len(audio_data) == 0:
-            logging.warning("Received empty audio data")
-            return
-
-        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=WEBRTC_SAMPLE_RATE, target_sr=STT_SAMPLE_RATE)
-        # Add the resampled audio data to the buffer
-        resampled_buffer.extend(resampled_chunk.astype(np.int16))
-
-        # Process the resampled buffer in chunks for VAD
-        while len(resampled_buffer) >= vad_chunk_size:
-            vad_chunk = [resampled_buffer.popleft() for _ in range(vad_chunk_size)]
-            vad_chunk = np.array(vad_chunk)
-            # Apply VAD
-            if vad.process_chunk(vad_chunk.tobytes()) >= 0.7:
-                #logging.info(f"Added chunk of length {len(vad_chunk)} to clip")
-                clip_buffer.extend(vad_chunk)
-                active_clip = True
-                silence_counter = 0
-            else:
-                silence_counter += 1
-                if active_clip and silence_counter > clip_silence_trigger_counter:
-                    clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
-                    if clip_length_seconds >= 1.0:
-                        await stt_queue.put(list(clip_buffer))  # Enqueue the clip buffer for STT processing
-                    else:
-                        logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
-                    clip_buffer.clear()
-                    active_clip = False
-    except Exception as e:
-        logging.error(f"Error processing audio chunk: {e}", exc_info=True)
-
-async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, room_tts: rtc.Room, livekit_token_tts: str) -> None:
-
-    @room_stt.on("track_subscribed")
-    def on_track_subscribed(
-        track: rtc.Track,
-        publication: rtc.RemoteTrackPublication,
-        participant: rtc.RemoteParticipant,
-    ):
-        logging.info("track subscribed: %s", publication.sid)
-        if track.kind == rtc.TrackKind.KIND_AUDIO:
-            logging.info("Subscribed to STT Audio Track")
-            audio_stream = rtc.AudioStream(track)
-
-            async def process_audio_stream():
-                try:
-                    async for audio_frame_event in audio_stream:
-                        audio_frame = audio_frame_event.frame
-                        audio_data = audio_frame.data  # Correctly access data attribute
-                        audio_data = np.frombuffer(audio_data, dtype=np.int16)
-                        
-                        # Process the received audio data
-                        await process_audio_chunk(audio_data, source="webrtc")
-                except Exception as e:
-                    logging.error(f"Error processing STT audio stream: {e}", exc_info=True)
-
-            asyncio.create_task(process_audio_stream())
-
-    await room_stt.connect(livekit_url, livekit_token_stt)
+def main_livekit():
+    global event_loop
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    event_loop = asyncio.get_event_loop()
+    room_stt = rtc.Room(loop=event_loop)
+    event_loop.run_until_complete(room_stt.connect(livekit_url, livekit_token_stt))
     logging.info("connected to stt room %s", room_stt.name)
     logging.info("participants: %s", room_stt.participants)
 
@@ -202,7 +209,8 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
         logging.error("Failed to create chat manager")
 
     if do_tts:
-        await room_tts.connect(livekit_url, livekit_token_tts)
+        room_tts = rtc.Room(loop=event_loop)
+        event_loop.run_until_complete(room_tts.connect(livekit_url, livekit_token_tts))
         logging.info("connected to tts room %s", room_tts.name)
         logging.info("participants: %s", room_tts.participants)
 
@@ -212,42 +220,65 @@ async def main(livekit_url: str, room_stt: rtc.Room, livekit_token_stt: str, roo
         local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
 
         # Publish the audio track to the tts room
-        await room_tts.local_participant.publish_track(local_audio_track)
+        event_loop.run_until_complete(room_tts.local_participant.publish_track(local_audio_track))
         print("Published TTS audio track to LiveKit tts room")
 
-    # Start the STT and TTS processing tasks
-    asyncio.create_task(process_stt_queue())
-    asyncio.create_task(process_tts_queue())
+    event_loop.run_forever()
+
+def main_gst_loop():
+    Gst.init(None)
+    pipeline = Gst.parse_launch(
+        f"livekitwebrtcsrc name=src "
+        f"signaller::ws-url={livekit_url} "
+        f"signaller::api-key={api_key} "
+        f"signaller::secret-key={api_secret} "
+        f"signaller::room-name={stt_room_name} "
+        "signaller::identity=gst-consumer "
+        "signaller::participant-name=gst-consumer "
+        "src. ! queue ! audioconvert ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
+    )
+
+    fakesink = pipeline.get_by_name("fakesink-1")
+    if not fakesink:
+        logging.error("Failed to get fakesink element from pipeline")
+        return
+
+    fakesink.connect("handoff", on_handoff)
+
+    bus = pipeline.get_bus()
+    bus.add_signal_watch()
+    glib_loop = GLib.MainLoop()
+
+    bus.connect("message", on_message, glib_loop)
+
+    pipeline.set_state(Gst.State.PLAYING)
+
+    try:
+        glib_loop.run()
+    except KeyboardInterrupt:
+        pass
+
+    pipeline.set_state(Gst.State.NULL)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Run FastAPI server with LiveKit integration.')
-    parser.add_argument('--livekit_url', type=str, required=True, help='LiveKit server URL')
-    parser.add_argument('--livekit_token_stt', type=str, required=True, help='LiveKit authentication token for STT audio')
-    parser.add_argument('--livekit_token_tts', type=str, required=True, help='LiveKit authentication token for TTS audio')
-    args = parser.parse_args()
-
     logging.basicConfig(
         level=logging.INFO,
         handlers=[logging.FileHandler("uam_server.log"), logging.StreamHandler()],
     )
 
-    loop = asyncio.get_event_loop()
-    room_stt = rtc.Room(loop=loop)
-    room_tts = None
-    if do_tts:
-        room_tts = rtc.Room(loop=loop)
+    # Start the LiveKit connection in a separate thread
+    livekit_thread = threading.Thread(target=main_livekit)
+    livekit_thread.start()
 
-    async def cleanup():
-        await room_stt.disconnect()
-        if room_tts:
-            await room_tts.disconnect()
-        loop.stop()
+    # Start the GStreamer main loop in a separate thread
+    gst_thread = threading.Thread(target=main_gst_loop)
+    gst_thread.start()
 
-    asyncio.ensure_future(main(args.livekit_url, room_stt, args.livekit_token_stt, room_tts, args.livekit_token_tts))
-    for signal in [SIGINT, SIGTERM]:
-        loop.add_signal_handler(signal, lambda: asyncio.ensure_future(cleanup()))
+    # Start a thread pool to process audio buffers from the queue
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        executor.submit(process_audio_from_queue)
 
-    try:
-        loop.run_forever()
-    finally:
-        loop.close()
+    # Ensure threads finish
+    livekit_thread.join()
+    gst_thread.join()
+
