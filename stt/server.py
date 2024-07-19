@@ -2,10 +2,7 @@ import threading
 import logging
 import json
 import io
-import queue
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from signal import SIGINT, SIGTERM
 import numpy as np
 from livekit import api, rtc
 import torch
@@ -18,6 +15,7 @@ import soundfile as sf
 import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
+import heapq
 
 # Constants for audio settings
 WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
@@ -46,7 +44,6 @@ transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
 
-
 print(f"Language set to {language}")
 
 # Load Whisper model
@@ -70,9 +67,6 @@ chat_manager = None  # Declare chat_manager as a global variable
 source = None
 event_loop = None  # Event loop for asyncio operations
 
-# Thread-safe queue for audio buffers
-audio_buffer_queue = queue.Queue()
-
 # Ring buffer for accumulating WebRTC audio data
 resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
@@ -80,34 +74,35 @@ active_clip = False
 silence_counter = 0
 clip_silence_trigger_counter = 10
 
+# Min-heap for storing audio buffers with sequence numbers
+sequence_number = 0
+min_heap = []
+heap_lock = threading.Lock()
+buffer_available = threading.Condition(heap_lock)
+
 def process_audio_chunk(data):
     global resampled_buffer, clip_buffer, active_clip, silence_counter
     global clip_silence_trigger_counter, chat_manager, event_loop
 
     try:
         # Convert the received audio data to numpy array
-  #      logging.info("Converting audio data to numpy array")
         audio_data = np.frombuffer(data, dtype=np.int16)
-  #      logging.info(f"Audio data length: {len(audio_data)}")
 
         # Ensure the audio data is at the target sample rate
         if len(audio_data) == 0:
             logging.warning("Received empty audio data")
             return
 
- #       logging.info("Resampling audio data")
+        # Resample the audio data
         resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=WEBRTC_SAMPLE_RATE, target_sr=STT_SAMPLE_RATE)
- #       logging.info(f"Resampled chunk length: {len(resampled_chunk)}")
-        # Add the resampled audio data to the buffer
         resampled_buffer.extend(resampled_chunk.astype(np.int16))
- #       logging.info(f"Resampled buffer length: {len(resampled_buffer)}")
+
         # Process the resampled buffer in chunks for VAD
         while len(resampled_buffer) >= vad_chunk_size:
             vad_chunk = [resampled_buffer.popleft() for _ in range(vad_chunk_size)]
             vad_chunk = np.array(vad_chunk)
             # Apply VAD
             if vad.process_chunk(vad_chunk.tobytes()) >= 0.7:
- #               logging.info(f"Added chunk of length {len(vad_chunk)} to clip")
                 clip_buffer.extend(vad_chunk)
                 active_clip = True
                 silence_counter = 0
@@ -116,7 +111,6 @@ def process_audio_chunk(data):
                 if active_clip and silence_counter > clip_silence_trigger_counter:
                     clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
                     if clip_length_seconds >= 1.0:
- #                       logging.info(f"Processing clip buffer of length {clip_length_seconds} seconds")
                         transcribe_and_tts_clip(list(clip_buffer))  # Process the clip buffer for STT and TTS
                     else:
                         logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
@@ -168,11 +162,13 @@ def synthesize_tts(transcript):
     except Exception as e:
         logging.error(f"Error processing TTS: {e}")
 
-def process_audio_from_queue():
+def process_audio_from_heap():
     while True:
-        data = audio_buffer_queue.get()
+        with heap_lock:
+            while not min_heap:
+                buffer_available.wait()
+            _, data = heapq.heappop(min_heap)
         process_audio_chunk(data)
-        audio_buffer_queue.task_done()
 
 def on_message(bus, message, loop):
     if message.type == Gst.MessageType.EOS:
@@ -188,10 +184,12 @@ def on_message(bus, message, loop):
 
 def on_handoff(fakesink, buffer, pad):
     try:
-#        logging.info("Handoff received")
         data = buffer.extract_dup(0, buffer.get_size())
-#        logging.info(f"Buffer extracted of size: {len(data)}")
-        audio_buffer_queue.put(data)  # Put the data into the thread-safe queue
+        # Extract sequence number from buffer metadata
+        seq_num = buffer.pts  # Using PTS (Presentation Time Stamp) as the sequence number
+        with heap_lock:
+            heapq.heappush(min_heap, (seq_num, data))
+            buffer_available.notify()
     except Exception as e:
         logging.error("Error in on_handoff", exc_info=True)
     return Gst.FlowReturn.OK
@@ -272,11 +270,11 @@ if __name__ == "__main__":
     gst_thread = threading.Thread(target=main_gst_loop)
     gst_thread.start()
 
-    # Start a thread pool to process audio buffers from the queue
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        executor.submit(process_audio_from_queue)
+    # Start a single thread to process audio buffers from the heap
+    processor_thread = threading.Thread(target=process_audio_from_heap)
+    processor_thread.start()
 
     # Ensure threads finish
     livekit_thread.join()
     gst_thread.join()
-
+    processor_thread.join()
