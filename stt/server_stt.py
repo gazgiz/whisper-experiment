@@ -16,11 +16,12 @@ import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 import heapq
+from queue import Queue
+import websockets
 
 # Constants for audio settings
 WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
 STT_SAMPLE_RATE = 16000  # Target sample rate for processing
-TTS_SAMPLE_RATE = 22050
 NUM_CHANNELS = 1
 
 # Initialize VAD
@@ -42,6 +43,8 @@ api_secret = config['api_secret']
 transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
+do_tts = config['do_tts']
+tts_url = config['tts_url']
 
 print(f"Language set to {language}")
 
@@ -70,6 +73,9 @@ sequence_number = 0
 min_heap = []
 heap_lock = threading.Lock()
 buffer_available = threading.Condition(heap_lock)
+
+# Queue for TTS processing
+tts_queue = Queue()
 
 def process_audio_chunk(data):
     global resampled_buffer, clip_buffer, active_clip, silence_counter
@@ -111,23 +117,47 @@ def process_audio_chunk(data):
         logging.error("Error processing audio chunk", exc_info=True)
 
 def transcribe(clip_buffer):
-    global chat_manager, event_loop
+    global chat_manager, event_loop, tts_queue
 
     try:
         # Perform the transcription
         result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language=language)
-
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         # Check if the transcript is empty
         if not transcript.strip():
             logging.info("Transcription is empty, skipping.")
             return
         logging.info(f"\nTranscription: {transcript}\n")
+
+        # Enqueue the transcript for TTS processing if do_tts is true
+        if do_tts:
+            tts_queue.put(transcript)
         if chat_manager:
-            # Use event loop to run the send_message coroutine
+            # Send transcript to chat manager
             event_loop.call_soon_threadsafe(asyncio.create_task, chat_manager.send_message(transcript))
     except Exception as e:
         logging.error(f"Error processing STT: {e}")
+
+def process_tts_queue():
+    while True:
+        transcript = tts_queue.get()
+        if transcript is None:
+            break
+        try:
+            asyncio.run(send_transcript_via_websocket(transcript))
+        except Exception as e:
+            logging.error(f"Error processing TTS: {e}")
+        finally:
+            tts_queue.task_done()
+
+async def send_transcript_via_websocket(transcript):
+    uri = tts_url  # Use the URL from the config
+    try:
+        async with websockets.connect(uri) as websocket:
+            await websocket.send(transcript)
+            logging.info("Transcript sent to TTS server via WebSocket.")
+    except Exception as e:
+        logging.error(f"Failed to send transcript via WebSocket: {e}")
 
 def process_audio_from_heap():
     while True:
@@ -176,6 +206,8 @@ def main_livekit():
     chat_manager = rtc.ChatManager(room)
     if not chat_manager:
         logging.error("Failed to create chat manager")
+
+    event_loop.run_forever()
 
 def main_gst_loop():
     Gst.init(None)
@@ -231,8 +263,13 @@ if __name__ == "__main__":
     processor_thread = threading.Thread(target=process_audio_from_heap)
     processor_thread.start()
 
+    # Start a thread to process the TTS queue
+    tts_thread = threading.Thread(target=process_tts_queue)
+    tts_thread.start()
+
     # Ensure threads finish
     livekit_thread.join()
     gst_thread.join()
     processor_thread.join()
-
+    tts_queue.put(None)  # Signal the TTS thread to exit
+    tts_thread.join()
