@@ -42,7 +42,7 @@ livekit_url = config['livekit_url']
 room_name = config['room_name']
 api_key = config['api_key']
 api_secret = config['api_secret']
-livekit_token_stt = config['livekit_token_stt']
+transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
 
@@ -201,7 +201,7 @@ def main_livekit():
     asyncio.set_event_loop(asyncio.new_event_loop())
     event_loop = asyncio.get_event_loop()
     room = rtc.Room(loop=event_loop)
-    event_loop.run_until_complete(room.connect(livekit_url, livekit_token_stt))
+    event_loop.run_until_complete(room.connect(livekit_url, transcript_token))
     logging.info("connected to room %s", room.name)
     logging.info("participants: %s", room.participants)
 
