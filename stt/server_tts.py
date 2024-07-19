@@ -1,4 +1,3 @@
-import asyncio
 import json
 import io
 import logging
@@ -38,12 +37,18 @@ if do_tts:
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device_tts)
 
+
+
 async def process_transcript(websocket, path):
     async for message in websocket:
-        data = json.loads(message)
-        transcript = data.get("transcript")
-        if transcript:
-            synthesize_and_send_tts(transcript)
+        logging.info(f"Received raw message: {message}")
+        try:
+            # Process the plain text transcript message
+            transcript = message  # Directly use the message as transcript
+            logging.info(f"Processing transcript: {transcript}")
+            # Continue with your processing logic
+        except Exception as e:
+            logging.error(f"Error processing message: {e}")
 
 async def synthesize_and_send_tts(transcript):
     try:
