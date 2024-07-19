@@ -248,9 +248,12 @@ def main_gst_loop():
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        handlers=[logging.FileHandler("uam_server.log"), logging.StreamHandler()],
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler("uam_server.log"),
+            logging.StreamHandler()
+        ]
     )
-
     # Start the LiveKit connection in a separate thread
     livekit_thread = threading.Thread(target=main_livekit)
     livekit_thread.start()
