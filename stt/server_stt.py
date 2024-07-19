@@ -1,5 +1,4 @@
 import threading
-import logging
 import json
 import io
 import asyncio
@@ -7,7 +6,6 @@ import numpy as np
 from livekit import api, rtc
 import torch
 from faster_whisper import WhisperModel
-from TTS.api import TTS
 import librosa
 import collections
 from pysilero_vad import SileroVoiceActivityDetector
@@ -18,6 +16,8 @@ from gi.repository import Gst, GLib
 import heapq
 from queue import Queue
 import websockets
+import logging
+
 
 # Constants for audio settings
 WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
@@ -125,9 +125,9 @@ def transcribe(clip_buffer):
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         # Check if the transcript is empty
         if not transcript.strip():
-            logging.info("Transcription is empty, skipping.")
+            print("Transcription is empty, skipping.")
             return
-        logging.info(f"\nTranscription: {transcript}\n")
+        print(f"{transcript}")
 
         # Enqueue the transcript for TTS processing if do_tts is true
         if do_tts:
