@@ -39,11 +39,12 @@ use_gpu = config['use_gpu']
 do_tts = config['do_tts']
 language = config['language']
 livekit_url = config['livekit_url']
-stt_room_name = config['stt_room_name']
+room_name = config['peer_user_name']
+peer_user_name = config['peer_user_name']
+system_user_name = config['system_user_name']
 api_key = config['api_key']
 api_secret = config['api_secret']
-livekit_token_stt = config['livekit_token_stt']
-livekit_token_tts = config['livekit_token_tts']
+system_token = config['system_token']
 
 print(f"Language set to {language}")
 
@@ -198,29 +199,24 @@ def main_livekit():
     global event_loop
     asyncio.set_event_loop(asyncio.new_event_loop())
     event_loop = asyncio.get_event_loop()
-    room_stt = rtc.Room(loop=event_loop)
-    event_loop.run_until_complete(room_stt.connect(livekit_url, livekit_token_stt))
-    logging.info("connected to stt room %s", room_stt.name)
-    logging.info("participants: %s", room_stt.participants)
+    room = rtc.Room(loop=event_loop)
+    event_loop.run_until_complete(room.connect(livekit_url, system_token))
+    logging.info("connected to room %s", room.name)
+    logging.info("participants: %s", room.participants)
 
     global chat_manager
-    chat_manager = rtc.ChatManager(room_stt)
+    chat_manager = rtc.ChatManager(room)
     if not chat_manager:
         logging.error("Failed to create chat manager")
 
     if do_tts:
-        room_tts = rtc.Room(loop=event_loop)
-        event_loop.run_until_complete(room_tts.connect(livekit_url, livekit_token_tts))
-        logging.info("connected to tts room %s", room_tts.name)
-        logging.info("participants: %s", room_tts.participants)
-
         global source
         # Create the audio source and track
         source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
         local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
 
-        # Publish the audio track to the tts room
-        event_loop.run_until_complete(room_tts.local_participant.publish_track(local_audio_track))
+        # Publish the audio track to the room
+        event_loop.run_until_complete(room.local_participant.publish_track(local_audio_track))
         print("Published TTS audio track to LiveKit tts room")
 
     event_loop.run_forever()
@@ -232,9 +228,10 @@ def main_gst_loop():
         f"signaller::ws-url={livekit_url} "
         f"signaller::api-key={api_key} "
         f"signaller::secret-key={api_secret} "
-        f"signaller::room-name={stt_room_name} "
-        "signaller::identity=gst-consumer "
-        "signaller::participant-name=gst-consumer "
+        f"signaller::room-name={room_name} "
+        f"signaller::producer-peer-id={peer_user_name} "
+        f"signaller::identity={system_user_name} "
+        f"signaller::participant-name={system_user_name} "
         "src. ! queue ! audioconvert ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
     )
 
