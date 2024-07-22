@@ -1,3 +1,4 @@
+import asyncio
 import json
 import io
 import logging
@@ -22,53 +23,77 @@ def load_config():
     return config
 
 config = load_config()
-do_tts = config['do_tts']
 livekit_url = config['livekit_url']
 room_name = config['room_name']
 api_key = config['api_key']
 api_secret = config['api_secret']
-transcript_token = config['transcript_token']
 tts_token = config['tts_token']
 tts_url = config['tts_url']
+language = config['language']
 
-# Load Coqui TTS model
-if do_tts:
-    device_tts = "cpu"  # TTS using CPU
-    tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-    tts.to(device_tts)
-
-
-
-async def process_transcript(websocket, path):
-    async for message in websocket:
-        logging.info(f"Received raw message: {message}")
-        try:
-            # Process the plain text transcript message
-            transcript = message  # Directly use the message as transcript
-            logging.info(f"Processing transcript: {transcript}")
-            # Continue with your processing logic
-        except Exception as e:
-            logging.error(f"Error processing message: {e}")
 
 async def synthesize_and_send_tts(transcript):
+    global tts
     try:
-        tts_output = tts.tts(text=transcript, speaker=default_speaker_id)
-        with io.BytesIO(tts_output) as audio_file:
-            audio_data, sample_rate = sf.read(audio_file, dtype='int16')
-            resampled_audio = librosa.resample(audio_data.astype(np.float32), orig_sr=sample_rate, target_sr=WEBRTC_SAMPLE_RATE)
-            send_audio_to_livekit(resampled_audio)
+        # Convert the transcribed text to speech with the default speaker and language
+        tts_output = tts.tts(text=transcript, speaker=default_speaker_id, language=language)
+
+        # Write the TTS output to a buffer at the correct sample rate
+        with io.BytesIO() as buffer:
+            sf.write(buffer, tts_output, samplerate=TTS_SAMPLE_RATE, format='WAV')
+            buffer.seek(0)
+            audio_bytes, sr = sf.read(buffer, dtype='int16')
+
+        # Ensure the audio data is in the correct format
+        if sr != TTS_SAMPLE_RATE:
+            raise ValueError("Sample rate mismatch in audio processing")
+
+        # Send TTS audio to LiveKit room
+        await publish_tts_to_livekit(audio_bytes)
     except Exception as e:
         logging.error(f"Error processing TTS: {e}")
 
-def send_audio_to_livekit(audio_data):
-    # Implementation of sending audio data to LiveKit room (depends on LiveKit's API)
-    pass
+async def publish_tts_to_livekit(audio_data):
+    global source
+    try:
+        # Create and configure the audio frame
+        resampled_audio = librosa.resample(audio_data.astype(np.float32), orig_sr=TTS_SAMPLE_RATE, target_sr=WEBRTC_SAMPLE_RATE)
+        resampled_audio = resampled_audio.astype(np.int16)
+        audio_frame = rtc.AudioFrame.create(WEBRTC_SAMPLE_RATE, NUM_CHANNELS, len(resampled_audio))
+        np.copyto(np.frombuffer(audio_frame.data, dtype=np.int16), resampled_audio)
+
+        # Send the audio data frame to LiveKit
+        await source.capture_frame(audio_frame)
+        logging.info(f"Sent audio frame of length: {len(audio_data)}")
+    except Exception as e:
+        logging.error(f"Error sending audio to LiveKit: {e}")
 
 async def main():
+    event_loop = asyncio.get_event_loop()
+    room = rtc.Room(loop=event_loop)
+    await room.connect(livekit_url, tts_token)
+    logging.info("Connected to room %s", room.name)
+    logging.info("Participants: %s", room.participants)
+
+    global source
+    # Create the audio source and track
+    source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
+    local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
+
+    # Publish the audio track to the tts room
+    await room.local_participant.publish_track(local_audio_track)
+    logging.info("Published TTS audio track to room %s", room.name)
+
+    # Load Coqui TTS model
+    device_tts = "cpu"  # TTS using CPU
+    global tts
+    tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
+    tts.to(device_tts)
+
     parsed_url = urllib.parse.urlparse(tts_url)
     host = parsed_url.hostname
     port = parsed_url.port
-    async with websockets.serve(process_transcript,host , port):
+    async with websockets.serve(process_transcript, host, port):
         await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
