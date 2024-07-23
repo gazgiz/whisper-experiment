@@ -23,8 +23,10 @@ RUN conda init bash && \
 
 # Copy requirements.txt and server.py into the image
 COPY requirements.txt /root/requirements.txt
-COPY server.py /root/server.py
-COPY config.json /root/config.json
+COPY server_stt.py /root/server_stt.py
+COPY config_stt.json /root/config_stt.json
+COPY server_tts.py /root/server_tts.py
+COPY config_tts.json /root/config_tts.json
 
 # Ensure the conda environment is activated and install dependencies
 RUN /opt/conda/bin/conda run -n stt_tts pip install --upgrade pip && \
@@ -95,9 +97,5 @@ ENV PKG_CONFIG_PATH=/usr/local/lib/x86_64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
 # Set working directory (optional)
 WORKDIR /root
 
-# Expose the server port
-EXPOSE 8000
-
-# Command to run the server
-CMD ["conda", "run", "--no-capture-output", "-n", "stt_tts", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["conda", "activate", "stt_tts"]
 

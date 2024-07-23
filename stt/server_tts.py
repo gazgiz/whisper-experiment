@@ -18,7 +18,7 @@ default_speaker_id = 'Andrew Chipper'  # Replace with any speaker ID from the li
 
 # Load config
 def load_config():
-    with open('config.json', 'r') as file:
+    with open('config_tts.json', 'r') as file:
         config = json.load(file)
     return config
 
@@ -32,7 +32,7 @@ tts_url = config['tts_url']
 language = config['language']
 
 
-async def synthesize_and_send_tts(transcript):
+async def process_transcript(transcript):
     global tts
     try:
         # Convert the transcribed text to speech with the default speaker and language

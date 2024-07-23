@@ -29,7 +29,7 @@ vad = SileroVoiceActivityDetector()
 vad_chunk_size = vad.chunk_samples()
 
 def load_config():
-    with open('config.json', 'r') as file:
+    with open('config_stt.json', 'r') as file:
         config = json.load(file)
     return config
 
@@ -226,7 +226,7 @@ def main_gst_loop():
         f"signaller::room-name={room_name} "
         f"signaller::identity={system_user_name} "
         f"signaller::participant-name={system_user_name} "
-        f"src. ! queue ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
+        f"src. ! queue ! audioconvert ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
     )
 
     fakesink = pipeline.get_by_name("fakesink-1")
