@@ -5,5 +5,4 @@ numpy
 livekit
 livekit-api
 pysilero-vad
-librosa
 pygobject

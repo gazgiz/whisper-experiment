@@ -1,6 +1,8 @@
 import threading
 import json
 import io
+import os
+import time
 import asyncio
 import numpy as np
 from livekit import api, rtc
@@ -20,9 +22,7 @@ import logging
 
 
 # Constants for audio settings
-WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
 STT_SAMPLE_RATE = 16000  # Target sample rate for processing
-NUM_CHANNELS = 1
 
 # Initialize VAD
 vad = SileroVoiceActivityDetector()
@@ -66,7 +66,7 @@ resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
-clip_silence_trigger_counter = 10
+clip_silence_trigger_counter = 5
 
 # Min-heap for storing audio buffers with sequence numbers
 sequence_number = 0
@@ -78,12 +78,13 @@ buffer_available = threading.Condition(heap_lock)
 tts_queue = Queue()
 
 def process_audio_chunk(data):
-    global resampled_buffer, clip_buffer, active_clip, silence_counter
+    global clip_buffer, active_clip, silence_counter
     global clip_silence_trigger_counter, chat_manager, event_loop
-
     try:
+        #logging.warning(f"Original audio length: {len(data)}")
         # Convert the received audio data to numpy array
         audio_data = np.frombuffer(data, dtype=np.int16)
+        #logging.warning(f"np buffer audio length: {len(audio_data)}")
 
         # Ensure the audio data is at the target sample rate
         if len(audio_data) == 0:
@@ -91,8 +92,7 @@ def process_audio_chunk(data):
             return
 
         # Resample the audio data
-        resampled_chunk = librosa.resample(audio_data.astype(np.float32), orig_sr=WEBRTC_SAMPLE_RATE, target_sr=STT_SAMPLE_RATE)
-        resampled_buffer.extend(resampled_chunk.astype(np.int16))
+        resampled_buffer.extend(audio_data)
 
         # Process the resampled buffer in chunks for VAD
         while len(resampled_buffer) >= vad_chunk_size:
@@ -120,8 +120,14 @@ def transcribe(clip_buffer):
     global chat_manager, event_loop, tts_queue
 
     try:
+        audio_data = np.array(clip_buffer).astype(np.int16)
+
+        # record to disk
+        #wav_file_path = f"/audio_segments/clip_{int(time.time())}.wav"
+        #sf.write(wav_file_path, audio_data, STT_SAMPLE_RATE, subtype='PCM_16')
+
         # Perform the transcription
-        result, _ = model.transcribe(np.array(clip_buffer).astype(np.float32) / 32768.0, language=language)
+        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
         transcript = " ".join([seg.text.strip() for seg in list(result)])
         # Check if the transcript is empty
         if not transcript.strip():
@@ -220,7 +226,7 @@ def main_gst_loop():
         f"signaller::room-name={room_name} "
         f"signaller::identity={system_user_name} "
         f"signaller::participant-name={system_user_name} "
-        "src. ! queue ! audioconvert ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
+        f"src. ! queue ! audioconvert ! audioresample ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
     )
 
     fakesink = pipeline.get_by_name("fakesink-1")
