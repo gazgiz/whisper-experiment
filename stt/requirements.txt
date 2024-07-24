@@ -7,3 +7,4 @@ livekit-api
 pysilero-vad
 pygobject
 librosa
+websockets
