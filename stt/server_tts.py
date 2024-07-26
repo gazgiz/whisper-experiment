@@ -5,6 +5,7 @@ import logging
 import soundfile as sf
 import numpy as np
 import librosa
+import torch
 from TTS.api import TTS
 from livekit import rtc
 import threading
@@ -23,6 +24,7 @@ def load_config():
     return config
 
 config = load_config()
+use_gpu = config['use_gpu']
 livekit_url = config['livekit_url']
 room_name = config['room_name']
 api_key = config['api_key']
@@ -106,7 +108,8 @@ async def main():
 
     # Load Coqui TTS model
     logging.getLogger('TTS').setLevel(logging.WARNING)  # Turn off Coqui logging
-    device_tts = "cpu"  # TTS using CPU
+    device_tts = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+    print("TTS using GPU" if device_tts == "cuda" else "TTS using CPU")
     global tts
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device_tts)
