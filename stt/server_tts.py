@@ -99,8 +99,10 @@ async def main():
     def on_chat_received(msg: rtc.ChatMessage):
         if not msg.message:
             return
-        logging.info(f"{msg.message}")
-        message_queue.put(msg.message)
+        if msg.participant.identity == transcript_identity:
+            logging.info(f"{msg.message}")
+            #print(f"message received: {msg.participant.identity}: {msg.message}")
+            message_queue.put(msg.message)
 
     # Load Coqui TTS model
     logging.getLogger('TTS').setLevel(logging.WARNING)  # Turn off Coqui logging
