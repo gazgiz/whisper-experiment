@@ -17,7 +17,6 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 import heapq
 from queue import Queue
-import websockets
 import logging
 
 
@@ -43,12 +42,12 @@ api_secret = config['api_secret']
 transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
-do_tts = config['do_tts']
 tts_url = config['tts_url']
 
 print(f"Language set to {language}")
 
 # Load Whisper model
+logging.getLogger('faster_whisper').setLevel(logging.WARNING)
 device_stt = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 print("STT using GPU" if device_stt == "cuda" else "STT using CPU")
 model_size = "medium"
@@ -74,8 +73,6 @@ min_heap = []
 heap_lock = threading.Lock()
 buffer_available = threading.Condition(heap_lock)
 
-# Queue for TTS processing
-tts_queue = Queue()
 
 def process_audio_chunk(data):
     global clip_buffer, active_clip, silence_counter
@@ -135,35 +132,11 @@ def transcribe(clip_buffer):
             return
         print(f"{transcript}")
 
-        # Enqueue the transcript for TTS processing if do_tts is true
-        if do_tts:
-            tts_queue.put(transcript)
         if chat_manager:
             # Send transcript to chat manager
             event_loop.call_soon_threadsafe(asyncio.create_task, chat_manager.send_message(transcript))
     except Exception as e:
         logging.error(f"Error processing STT: {e}")
-
-def process_tts_queue():
-    while True:
-        transcript = tts_queue.get()
-        if transcript is None:
-            break
-        try:
-            asyncio.run(send_transcript_via_websocket(transcript))
-        except Exception as e:
-            logging.error(f"Error processing TTS: {e}")
-        finally:
-            tts_queue.task_done()
-
-async def send_transcript_via_websocket(transcript):
-    uri = tts_url  # Use the URL from the config
-    try:
-        async with websockets.connect(uri) as websocket:
-            await websocket.send(transcript)
-            logging.info("Transcript sent to TTS server via WebSocket.")
-    except Exception as e:
-        logging.error(f"Failed to send transcript via WebSocket: {e}")
 
 def process_audio_from_heap():
     while True:
@@ -272,13 +245,7 @@ if __name__ == "__main__":
     processor_thread = threading.Thread(target=process_audio_from_heap)
     processor_thread.start()
 
-    # Start a thread to process the TTS queue
-    tts_thread = threading.Thread(target=process_tts_queue)
-    tts_thread.start()
-
     # Ensure threads finish
     livekit_thread.join()
     gst_thread.join()
     processor_thread.join()
-    tts_queue.put(None)  # Signal the TTS thread to exit
-    tts_thread.join()

@@ -2,13 +2,13 @@ import asyncio
 import json
 import io
 import logging
-import websockets
 import soundfile as sf
 import numpy as np
 import librosa
 from TTS.api import TTS
 from livekit import rtc
-import urllib.parse
+import threading
+from queue import Queue
 
 # Constants for audio settings
 WEBRTC_SAMPLE_RATE = 48000  # WebRTC default sample rate
@@ -28,9 +28,11 @@ room_name = config['room_name']
 api_key = config['api_key']
 api_secret = config['api_secret']
 tts_token = config['tts_token']
-tts_url = config['tts_url']
 language = config['language']
+transcript_identity = config['transcript_identity']
 
+# Blocking queue for chat messages
+message_queue = Queue()
 
 async def process_transcript(transcript):
     global tts
@@ -68,6 +70,12 @@ async def publish_tts_to_livekit(audio_data):
     except Exception as e:
         logging.error(f"Error sending audio to LiveKit: {e}")
 
+def message_processor():
+    while True:
+        transcript = message_queue.get()
+        asyncio.run(process_transcript(transcript))
+        message_queue.task_done()
+
 async def main():
     event_loop = asyncio.get_event_loop()
     room = rtc.Room(loop=event_loop)
@@ -84,17 +92,28 @@ async def main():
     await room.local_participant.publish_track(local_audio_track)
     logging.info("Published TTS audio track to room %s", room.name)
 
+    # Initialize ChatManager to receive messages
+    chat_manager = rtc.ChatManager(room)
+
+    @chat_manager.on("message_received")
+    def on_chat_received(msg: rtc.ChatMessage):
+        if not msg.message:
+            return
+        logging.info(f"{msg.message}")
+        message_queue.put(msg.message)
+
     # Load Coqui TTS model
+    logging.getLogger('TTS').setLevel(logging.WARNING)  # Turn off Coqui logging
     device_tts = "cpu"  # TTS using CPU
     global tts
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
     tts.to(device_tts)
 
-    parsed_url = urllib.parse.urlparse(tts_url)
-    host = parsed_url.hostname
-    port = parsed_url.port
-    async with websockets.serve(process_transcript, host, port):
-        await asyncio.Future()  # Run forever
+    # Start the message processor thread
+    processor_thread = threading.Thread(target=message_processor, daemon=True)
+    processor_thread.start()
+
+    await asyncio.Future()  # Run forever
 
 if __name__ == "__main__":
     logging.basicConfig(
