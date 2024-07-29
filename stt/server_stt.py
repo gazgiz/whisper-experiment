@@ -179,7 +179,7 @@ def main_livekit():
     room = rtc.Room(loop=event_loop)
     event_loop.run_until_complete(room.connect(livekit_url, transcript_token))
     logging.info("connected to room %s", room.name)
-    logging.info("participants: %s", room.participants)
+    logging.info("remote participants: %s", room.remote_participants)
 
     global chat_manager
     chat_manager = rtc.ChatManager(room)
