@@ -143,17 +143,52 @@ def process_audio_from_heap():
             _, data = heapq.heappop(min_heap)
         process_audio_chunk(data)
 
-def on_message(bus, message, loop):
+
+
+def start_pipeline():
+    global pipeline
+    pipeline = Gst.parse_launch(
+        f"livekitwebrtcsrc name=src "
+        f"signaller::ws-url={livekit_url} "
+        f"signaller::api-key={api_key} "
+        f"signaller::secret-key={api_secret} "
+        f"signaller::producer-peer-id={peer_user_name} "
+        f"signaller::room-name={room_name} "
+        f"signaller::identity={system_user_name} "
+        f"signaller::participant-name={system_user_name} "
+        f"src. ! queue ! audioconvert ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
+    )
+
+    fakesink = pipeline.get_by_name("fakesink-1")
+    if not fakesink:
+        logging.error("Failed to get fakesink element from pipeline")
+        return
+
+    fakesink.connect("handoff", on_handoff)
+
+    bus = pipeline.get_bus()
+    bus.add_signal_watch()
+
+    bus.connect("message", on_message)
+
+    pipeline.set_state(Gst.State.PLAYING)
+
+
+def on_message(bus, message):
     if message.type == Gst.MessageType.EOS:
         print("End of stream")
-        loop.quit()
+        pipeline.set_state(Gst.State.NULL)
+        start_pipeline()
     elif message.type == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
         print(f"Error: {err}, {debug}")
-        loop.quit()
+        pipeline.set_state(Gst.State.NULL)
+        start_pipeline()
     elif message.type == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
         print(f"Warning: {err}, {debug}")
+
+
 
 def on_handoff(fakesink, buffer, pad):
     try:
@@ -187,33 +222,8 @@ def main_livekit():
 
 def main_gst_loop():
     Gst.init(None)
-    pipeline = Gst.parse_launch(
-        f"livekitwebrtcsrc name=src "
-        f"signaller::ws-url={livekit_url} "
-        f"signaller::api-key={api_key} "
-        f"signaller::secret-key={api_secret} "
-        f"signaller::producer-peer-id={peer_user_name} "
-        f"signaller::room-name={room_name} "
-        f"signaller::identity={system_user_name} "
-        f"signaller::participant-name={system_user_name} "
-        f"src. ! queue ! audioconvert ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
-    )
-
-    fakesink = pipeline.get_by_name("fakesink-1")
-    if not fakesink:
-        logging.error("Failed to get fakesink element from pipeline")
-        return
-
-    fakesink.connect("handoff", on_handoff)
-
-    bus = pipeline.get_bus()
-    bus.add_signal_watch()
+    start_pipeline()
     glib_loop = GLib.MainLoop()
-
-    bus.connect("message", on_message, glib_loop)
-
-    pipeline.set_state(Gst.State.PLAYING)
-
     try:
         glib_loop.run()
     except KeyboardInterrupt:
