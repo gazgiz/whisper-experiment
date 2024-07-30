@@ -1,6 +1,6 @@
 import gi
 gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk
+from gi.repository import Gtk, Gdk, GLib
 import asyncio
 import threading
 import logging
@@ -97,13 +97,15 @@ class LiveKitApp(Gtk.Application):
         self.status_label = Gtk.Label(label="Disconnected")
         box.append(self.status_label)
 
-        # Chat Messages View
+       # Chat Messages View
         chat_label = Gtk.Label(label="Chat Messages:")
         box.append(chat_label)
         self.chat_view = Gtk.TextView()
         self.chat_view.set_editable(False)
         self.chat_view.set_cursor_visible(False)
         self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD)
+        self.chat_buffer = self.chat_view.get_buffer()
+        self.chat_buffer.connect("insert-text", self.on_text_inserted)
         chat_scroll = Gtk.ScrolledWindow()
         chat_scroll.set_min_content_height(200)
         chat_scroll.set_child(self.chat_view)
@@ -113,6 +115,14 @@ class LiveKitApp(Gtk.Application):
         self.load_last_config()
 
         self.window.show()
+
+
+    def on_text_inserted(self, buffer, iter, text, length):
+        GLib.idle_add(self.scroll_to_end)
+
+    def scroll_to_end(self):
+        adj = self.chat_view.get_vadjustment()
+        adj.set_value(adj.get_upper() - adj.get_page_size())        
 
     def load_last_config(self):
         if os.path.exists(CONFIG_FILE):
