@@ -8,7 +8,6 @@ import numpy as np
 from livekit import api, rtc
 import torch
 from faster_whisper import WhisperModel
-import librosa
 import collections
 from pysilero_vad import SileroVoiceActivityDetector
 import soundfile as sf
@@ -16,7 +15,6 @@ import gi
 gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 import heapq
-from queue import Queue
 import logging
 
 
@@ -51,7 +49,7 @@ logging.getLogger('faster_whisper').setLevel(logging.WARNING)
 device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 if device == "cuda":
     torch.cuda.set_device(gpu_id)
-print("STT using CPU" if device == "cpu" else "STT using GPU")
+print("using CPU" if device == "cpu" else "using GPU")
 model_size = "medium"
 compute_type = "int8" if device == "cpu" else "float16"
 model = WhisperModel(model_size, device=device, compute_type=compute_type)
@@ -104,7 +102,7 @@ def process_audio_chunk(data):
                 if active_clip and silence_counter > clip_silence_trigger_counter:
                     clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
                     if clip_length_seconds >= 1.0:
-                        transcribe(list(clip_buffer))  # Process the clip buffer for STT and TTS
+                        transcribe(list(clip_buffer))
                     else:
                         logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
                     clip_buffer.clear()
@@ -113,7 +111,7 @@ def process_audio_chunk(data):
         logging.error("Error processing audio chunk", exc_info=True)
 
 def transcribe(clip_buffer):
-    global chat_manager, event_loop, tts_queue
+    global chat_manager, event_loop
 
     try:
         audio_data = np.array(clip_buffer).astype(np.int16)
