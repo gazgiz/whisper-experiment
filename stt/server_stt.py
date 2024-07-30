@@ -34,6 +34,7 @@ def load_config():
 
 config = load_config()
 use_gpu = config['use_gpu']
+gpu_id = config['gpu_id']
 language = config['language']
 livekit_url = config['livekit_url']
 room_name = config['room_name']
@@ -42,20 +43,18 @@ api_secret = config['api_secret']
 transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
-tts_url = config['tts_url']
 
 print(f"Language set to {language}")
 
 # Load Whisper model
 logging.getLogger('faster_whisper').setLevel(logging.WARNING)
-device_stt = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
-print("STT using GPU" if device_stt == "cuda" else "STT using CPU")
+device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+if device == "cuda":
+    torch.cuda.set_device(gpu_id)
+print("STT using CPU" if device == "cpu" else "STT using GPU")
 model_size = "medium"
-if device_stt == "cuda":
-    model = WhisperModel(model_size, device="cuda", compute_type="float16")
-else:
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-
+compute_type = "int8" if device == "cpu" else "float16"
+model = WhisperModel(model_size, device=device, compute_type=compute_type)
 chat_manager = None  # Declare chat_manager as a global variable
 source = None
 event_loop = None  # Event loop for asyncio operations

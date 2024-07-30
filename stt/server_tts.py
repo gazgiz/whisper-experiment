@@ -25,6 +25,7 @@ def load_config():
 
 config = load_config()
 use_gpu = config['use_gpu']
+gpu_id = config['gpu_id']
 livekit_url = config['livekit_url']
 room_name = config['room_name']
 api_key = config['api_key']
@@ -82,8 +83,8 @@ async def main():
     event_loop = asyncio.get_event_loop()
     room = rtc.Room(loop=event_loop)
     await room.connect(livekit_url, tts_token)
-    logging.info("Connected to room %s", room.name)
-    logging.info("Participants: %s", room.participants)
+    logging.info("connected to room %s", room.name)
+    logging.info("remote participants: %s", room.remote_participants)
 
     global source
     # Create the audio source and track
@@ -106,13 +107,17 @@ async def main():
             #print(f"message received: {msg.participant.identity}: {msg.message}")
             message_queue.put(msg.message)
 
+    # setting up device
+    logging.getLogger('faster_whisper').setLevel(logging.WARNING)
+    device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
+    if device == "cuda":
+        torch.cuda.set_device(gpu_id)
+    print("TTS using GPU" if device == "cuda" else "TTS using CPU")
+
     # Load Coqui TTS model
-    logging.getLogger('TTS').setLevel(logging.WARNING)  # Turn off Coqui logging
-    device_tts = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
-    print("TTS using GPU" if device_tts == "cuda" else "TTS using CPU")
     global tts
     tts = TTS(model_name="tts_models/multilingual/multi-dataset/xtts_v2", progress_bar=False)
-    tts.to(device_tts)
+    tts.to(device)
 
     # Start the message processor thread
     processor_thread = threading.Thread(target=message_processor, daemon=True)
