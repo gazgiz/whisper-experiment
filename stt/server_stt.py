@@ -16,7 +16,7 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst, GLib
 import heapq
 import logging
-
+import langid
 
 # Constants for audio settings
 STT_SAMPLE_RATE = 16000  # Target sample rate for processing
@@ -110,6 +110,10 @@ def process_audio_chunk(data):
     except Exception as e:
         logging.error("Error processing audio chunk", exc_info=True)
 
+def detect_language(text):
+    lang, confidence = langid.classify(text)
+    return lang, confidence
+
 def transcribe(clip_buffer):
     global chat_manager, event_loop
 
@@ -121,13 +125,21 @@ def transcribe(clip_buffer):
         #sf.write(wav_file_path, audio_data, STT_SAMPLE_RATE, subtype='PCM_16')
 
         # Perform the transcription
-        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
+        if language == 'ko':
+            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0)
+        else:
+            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
         transcript = " ".join([seg.text.strip() for seg in list(result)])
+
+
         # Check if the transcript is empty
         if not transcript.strip():
             print("Transcription is empty, skipping.")
             return
         print(f"{transcript}")
+
+        lang, confidence = detect_language(transcript)
+        logging.info(f"Language {lang}, confidence {confidence}")
 
         if chat_manager:
             # Send transcript to chat manager
