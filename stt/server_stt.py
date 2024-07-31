@@ -50,7 +50,7 @@ device = "cuda" if torch.cuda.is_available() and use_gpu else "cpu"
 if device == "cuda":
     torch.cuda.set_device(gpu_id)
 print("using CPU" if device == "cpu" else "using GPU")
-model_size = "medium"
+model_size = "medium.en" if language == 'en' else "medium"
 compute_type = "int8" if device == "cpu" else "float16"
 model = WhisperModel(model_size, device=device, compute_type=compute_type)
 chat_manager = None  # Declare chat_manager as a global variable
@@ -62,7 +62,7 @@ resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
-clip_silence_trigger_counter = 5
+clip_silence_trigger_counter = 10
 
 # Min-heap for storing audio buffers with sequence numbers
 sequence_number = 0
@@ -101,7 +101,7 @@ def process_audio_chunk(data):
                 silence_counter += 1
                 if active_clip and silence_counter > clip_silence_trigger_counter:
                     clip_length_seconds = len(clip_buffer) / STT_SAMPLE_RATE
-                    if clip_length_seconds >= 1.0:
+                    if clip_length_seconds >= 0.2:
                         transcribe(list(clip_buffer))
                     else:
                         logging.info(f"Discarded clip of length {clip_length_seconds:.2f} seconds")
