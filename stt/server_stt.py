@@ -41,6 +41,8 @@ api_secret = config['api_secret']
 transcript_token = config['transcript_token']
 peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
+record = config['record']
+pause_in_ms = config['pause_in_ms']
 
 print(f"Language set to {language}")
 
@@ -62,13 +64,53 @@ resampled_buffer = collections.deque()
 clip_buffer = collections.deque()
 active_clip = False
 silence_counter = 0
-clip_silence_trigger_counter = 10
+# pysilero processes in 30 ms chunks
+clip_silence_trigger_counter = pause_in_ms // 30
 
 # Min-heap for storing audio buffers with sequence numbers
 sequence_number = 0
 min_heap = []
 heap_lock = threading.Lock()
 buffer_available = threading.Condition(heap_lock)
+
+
+# Initialize a buffer to accumulate audio data
+audio_in = np.array([])
+
+def record_audio_clip(audio_data, sample_rate=STT_SAMPLE_RATE, clip_duration=5):
+    """
+    Accumulates audio data until a 5-second clip is available and saves it to the 'audio_segments' directory.
+
+    Parameters:
+    audio_data (numpy.ndarray): The audio data to record.
+    sample_rate (int): The sample rate of the audio data.
+    clip_duration (int): The duration of the clip in seconds (default is 5 seconds).
+    """
+    global audio_in
+
+    # Calculate the number of samples for the given duration
+    num_samples = clip_duration * sample_rate
+
+    # Append the new audio data to the buffer
+    audio_in = np.append(audio_in, audio_data)
+
+    # Check if the buffer has enough samples for a 5-second clip
+    if len(audio_in) >= num_samples:
+        # Define the directory path
+        directory_path = "audio_segments"
+
+        # Check if the directory exists, and create it if it doesn't
+        if not os.path.exists(directory_path):
+            os.makedirs(directory_path)
+
+        # Define the file path
+        wav_file_path = f"{directory_path}/clip_{int(time.time())}.wav"
+
+        # Write the audio data to the file
+        sf.write(wav_file_path, audio_in[:num_samples], sample_rate, subtype='PCM_16')
+
+        # Remove the saved portion from the buffer
+        audio_in = audio_in[num_samples:]
 
 
 def process_audio_chunk(data):
@@ -84,6 +126,9 @@ def process_audio_chunk(data):
         if len(audio_data) == 0:
             logging.warning("Received empty audio data")
             return
+
+        if record:
+            record_audio_clip(audio_data / 32768.0)
 
         # Resample the audio data
         resampled_buffer.extend(audio_data)
