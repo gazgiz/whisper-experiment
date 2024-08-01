@@ -169,8 +169,12 @@ def transcribe(clip_buffer):
         #wav_file_path = f"/audio_segments/clip_{int(time.time())}.wav"
         #sf.write(wav_file_path, audio_data, STT_SAMPLE_RATE, subtype='PCM_16')
 
-        # Perform the transcription
-        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
+        # Perform the transcription - use mixed model for Korean, and English model
+        # for English
+        if language == 'ko':
+            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0)
+        else :
+            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
         transcript = " ".join([seg.text.strip() for seg in list(result)])
 
 
