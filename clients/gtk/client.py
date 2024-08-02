@@ -114,6 +114,9 @@ class LiveKitApp(Gtk.Application):
         # Load the last configuration if it exists
         self.load_last_config()
 
+        # Set the connect button as the default widget
+        self.window.set_default_widget(self.connect_button)
+
         self.window.show()
 
     def on_text_inserted(self, buffer, iter, text, length):
@@ -181,6 +184,9 @@ class LiveKitApp(Gtk.Application):
             await self.livekit_room.connect(url, token)
             logging.info(f"Connected to LiveKit room: {self.livekit_room.name}")
             self.update_status("Connected", "red")
+
+            # Set the disconnect button as the default widget
+            self.window.set_default_widget(self.disconnect_button)
 
             # Create the audio source and track
             self.livekit_source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
@@ -325,6 +331,10 @@ class LiveKitApp(Gtk.Application):
             self.livekit_source = None
             logging.info("Audio source released.")
         self.update_status("Disconnected", "black")
+
+        # Set the connect button as the default widget
+        self.window.set_default_widget(self.connect_button)
+
         self.stop_event.clear()
         logging.info("Disconnect process complete.")
 
