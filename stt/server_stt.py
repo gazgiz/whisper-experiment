@@ -192,7 +192,6 @@ def process_audio_from_heap():
         process_audio_chunk(data)
 
 
-
 def start_pipeline():
     global pipeline
     pipeline = Gst.parse_launch(
@@ -221,22 +220,23 @@ def start_pipeline():
 
     pipeline.set_state(Gst.State.PLAYING)
 
+def restart_pipeline():
+    global pipeline
+    pipeline.set_state(Gst.State.NULL)
+    logging.info("Restarting pipeline...")
+    start_pipeline()
 
 def on_message(bus, message):
     if message.type == Gst.MessageType.EOS:
-        print("End of stream")
-        pipeline.set_state(Gst.State.NULL)
-        start_pipeline()
+        logging.info("End of stream, restarting pipeline...")
+        restart_pipeline()
     elif message.type == Gst.MessageType.ERROR:
         err, debug = message.parse_error()
-        print(f"Error: {err}, {debug}")
-        pipeline.set_state(Gst.State.NULL)
-        start_pipeline()
+        logging.error(f"Error: {err}, {debug}")
+        restart_pipeline()
     elif message.type == Gst.MessageType.WARNING:
         err, debug = message.parse_warning()
-        print(f"Warning: {err}, {debug}")
-
-
+        logging.warning(f"Warning: {err}, {debug}")
 
 def on_handoff(fakesink, buffer, pad):
     try:
