@@ -33,6 +33,7 @@ class LiveKitApp(Gtk.Application):
         self.tasks = []
         self.loop_thread = threading.Thread(target=self.start_loop, args=(self.loop,), daemon=True)
         self.loop_thread.start()
+        self.scroll_idle_id = None
 
     def start_loop(self, loop):
         asyncio.set_event_loop(loop)
@@ -105,7 +106,6 @@ class LiveKitApp(Gtk.Application):
         self.chat_view.set_cursor_visible(False)
         self.chat_view.set_wrap_mode(Gtk.WrapMode.WORD)
         self.chat_buffer = self.chat_view.get_buffer()
-        self.chat_buffer.connect("insert-text", self.on_text_inserted)
         chat_scroll = Gtk.ScrolledWindow()
         chat_scroll.set_min_content_height(200)
         chat_scroll.set_child(self.chat_view)
@@ -119,12 +119,23 @@ class LiveKitApp(Gtk.Application):
 
         self.window.show()
 
-    def on_text_inserted(self, buffer, iter, text, length):
-        GLib.idle_add(self.scroll_to_end)
-
     def scroll_to_end(self):
         adj = self.chat_view.get_vadjustment()
-        adj.set_value(adj.get_upper() - adj.get_page_size())        
+        adj.set_value(adj.get_upper() - adj.get_page_size())
+        self.scroll_idle_id = None
+        return False  # Returning False removes the idle source after execution
+
+    def show_chat_message(self, message):
+        def insert_message():
+            buffer = self.chat_view.get_buffer()
+            buffer.insert(buffer.get_end_iter(), f"{message}\n")
+            # Schedule scroll_to_end to run on the main UI thread
+            if self.scroll_idle_id is None:
+                self.scroll_idle_id = GLib.idle_add(self.scroll_to_end)
+            return False  # Returning False to remove the idle source
+
+        # Ensure the message is inserted from the main thread
+        GLib.idle_add(insert_message)
 
     def load_last_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -279,10 +290,6 @@ class LiveKitApp(Gtk.Application):
                 p.terminate()
             except Exception as e:
                 logging.error(f"Exception during stream close: {e}")
-
-    def show_chat_message(self, message):
-        buffer = self.chat_view.get_buffer()
-        buffer.insert(buffer.get_end_iter(), f"{message}\n")
 
     def on_disconnect_clicked(self, button):
         self.stop_event.set()
