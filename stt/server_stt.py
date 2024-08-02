@@ -43,6 +43,7 @@ peer_user_name = config['peer_user_name']
 system_user_name = config['system_user_name']
 record = config['record']
 pause_in_ms = config['pause_in_ms']
+initial_prompt = config['initial_prompt']
 
 print(f"Language set to {language}")
 
@@ -164,19 +165,8 @@ def transcribe(clip_buffer):
 
     try:
         audio_data = np.array(clip_buffer).astype(np.int16)
-
-        # record to disk
-        #wav_file_path = f"/audio_segments/clip_{int(time.time())}.wav"
-        #sf.write(wav_file_path, audio_data, STT_SAMPLE_RATE, subtype='PCM_16')
-
-        # Perform the transcription - use mixed model for Korean, and English model
-        # for English
-        if language == 'ko':
-            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0)
-        else :
-            result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language)
+        result, _ = model.transcribe(audio_data.astype(np.float32) / 32768.0, language=language, initial_prompt=initial_prompt)
         transcript = " ".join([seg.text.strip() for seg in list(result)])
-
 
         # Check if the transcript is empty
         if not transcript.strip():
