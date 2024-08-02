@@ -198,7 +198,7 @@ class LiveKitApp(Gtk.Application):
             def on_chat_received(msg: rtc.ChatMessage):
                 if not msg.message:
                     return
-                logging.info(f"Chat message received: {msg.message}")
+                print(f"{msg.message}")
                 self.show_chat_message(msg.message)
 
             # Additional logging to verify ChatManager setup
