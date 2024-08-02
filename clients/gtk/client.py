@@ -7,11 +7,13 @@ import logging
 from livekit import rtc
 import numpy as np
 import pyaudio
+import soundfile as sf
 import os
 import json
 import sys
 
-SAMPLE_RATE = 16000  # Microphone standard sample rate
+SAMPLE_RATE_MIC = 16000  # Microphone standard sample rate
+SAMPLE_RATE_WEBRTC = 48000  # WebRTC sample rate
 NUM_CHANNELS = 1
 CHUNK_SIZE = 1024  # Number of frames per buffer
 CONFIG_FILE = os.path.expanduser("~/.cache/livekit_config.json")
@@ -170,25 +172,61 @@ class LiveKitApp(Gtk.Application):
         )
         self.tasks.append(task)
 
+
+    async def play_audio(self, track):
+        p = pyaudio.PyAudio()
+
+        # Open stream for playback
+        stream = p.open(format=pyaudio.paInt16,
+                        channels=NUM_CHANNELS,
+                        rate=SAMPLE_RATE_WEBRTC,
+                        output=True,
+                        frames_per_buffer=480)
+
+        logging.info("Audio playback stream opened")
+
+        def on_audio_frame(frame):
+            audio_data = np.frombuffer(frame.data, dtype=np.int16)
+            logging.info(f"Received audio frame with {len(audio_data)} samples")
+            # Optional: Log the first few samples for debugging
+            logging.debug(f"Audio data: {audio_data[:10]}")
+            self.record_audio_clip(audio_data / 32768.0)
+            stream.write(audio_data)
+            logging.info("Audio data written to playback stream")
+
+        track.on("audio_frame", on_audio_frame)
+
+        try:
+            while not self.stop_event.is_set():
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            logging.info("play_audio cancelled")
+        except Exception as e:
+            logging.error(f"Exception in play_audio: {e}")
+        finally:
+            logging.info("Stopping play_audio")
+            try:
+                stream.stop_stream()
+                stream.close()
+                p.terminate()
+            except Exception as e:
+                logging.error(f"Exception during stream close: {e}")
+
     async def join_room(self, url, token, room_name):
         self.livekit_room = rtc.Room()
 
         @self.livekit_room.on("participant_connected")
         def on_participant_connected(participant: rtc.RemoteParticipant):
-            logging.info(
-                "Participant connected: %s %s", participant.sid, participant.identity
-            )
+            logging.info("Participant connected: %s %s", participant.sid, participant.identity)
 
         @self.livekit_room.on("track_subscribed")
-        async def on_track_subscribed(
-            track: rtc.AudioTrack,
-            publication: rtc.RemoteTrackPublication,
-            participant: rtc.RemoteParticipant,
-        ):
-            logging.info("Audio track subscribed: %s", publication.sid)
-            if track.kind == "audio":
+        def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+            logging.info("Track subscribed: %s", publication.sid)
+            if track.kind == rtc.TrackKind.KIND_AUDIO:
                 logging.info("Audio track received: %s", track.sid)
-                task = asyncio.create_task(self.play_audio(track))
+                task = asyncio.run_coroutine_threadsafe(
+                    self.play_audio(track), self.loop
+                )
                 self.tasks.append(task)
 
         try:
@@ -200,7 +238,7 @@ class LiveKitApp(Gtk.Application):
             self.window.set_default_widget(self.disconnect_button)
 
             # Create the audio source and track
-            self.livekit_source = rtc.AudioSource(SAMPLE_RATE, NUM_CHANNELS)
+            self.livekit_source = rtc.AudioSource(SAMPLE_RATE_MIC, NUM_CHANNELS)
             self.local_audio_track = rtc.LocalAudioTrack.create_audio_track("audio-track", self.livekit_source)
 
             # Publish the audio track to the room
@@ -233,19 +271,23 @@ class LiveKitApp(Gtk.Application):
         # Open stream
         stream = p.open(format=pyaudio.paInt16,
                         channels=NUM_CHANNELS,
-                        rate=SAMPLE_RATE,
+                        rate=SAMPLE_RATE_MIC,
                         input=True,
                         frames_per_buffer=CHUNK_SIZE)
 
-        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE, NUM_CHANNELS, CHUNK_SIZE)
+        logging.info("Microphone stream opened for publishing frames")
+
+        audio_frame = rtc.AudioFrame.create(SAMPLE_RATE_MIC, NUM_CHANNELS, CHUNK_SIZE)
         audio_data = np.frombuffer(audio_frame.data, dtype=np.int16)
 
         try:
             while not self.stop_event.is_set():
                 # Read data from microphone
                 mic_data = stream.read(CHUNK_SIZE)
+                #logging.info(f"Read {len(mic_data)} bytes from microphone")
                 np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
                 await source.capture_frame(audio_frame)
+                logging.debug("Captured audio frame from microphone")
         except asyncio.CancelledError:
             logging.info("publish_frames cancelled")
         except Exception as e:
@@ -259,37 +301,44 @@ class LiveKitApp(Gtk.Application):
             except Exception as e:
                 logging.error(f"Exception during stream close: {e}")
 
-    async def play_audio(self, track):
-        p = pyaudio.PyAudio()
+    # Initialize a buffer to accumulate audio data
+    audio_in = np.array([])
 
-        # Open stream for playback
-        stream = p.open(format=pyaudio.paInt16,
-                        channels=NUM_CHANNELS,
-                        rate=SAMPLE_RATE,
-                        output=True,
-                        frames_per_buffer=480)
+    def record_audio_clip(audio_data, sample_rate=SAMPLE_RATE_WEBRTC, clip_duration=5):
+        """
+        Accumulates audio data until a 5-second clip is available and saves it to the 'audio_segments' directory.
 
-        def on_audio_frame(frame):
-            audio_data = np.frombuffer(frame.data, dtype=np.int16)
-            stream.write(audio_data)
+        Parameters:
+        audio_data (numpy.ndarray): The audio data to record.
+        sample_rate (int): The sample rate of the audio data.
+        clip_duration (int): The duration of the clip in seconds (default is 5 seconds).
+        """
+        global audio_in
 
-        track.on("audio_frame", on_audio_frame)
+        # Calculate the number of samples for the given duration
+        num_samples = clip_duration * sample_rate
 
-        try:
-            while not self.stop_event.is_set():
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            logging.info("play_audio cancelled")
-        except Exception as e:
-            logging.error(f"Exception in play_audio: {e}")
-        finally:
-            logging.info("Stopping play_audio")
-            try:
-                stream.stop_stream()
-                stream.close()
-                p.terminate()
-            except Exception as e:
-                logging.error(f"Exception during stream close: {e}")
+        # Append the new audio data to the buffer
+        audio_in = np.append(audio_in, audio_data)
+
+        # Check if the buffer has enough samples for a 5-second clip
+        if len(audio_in) >= num_samples:
+            # Define the directory path
+            directory_path = "client_audio_segments"
+
+            # Check if the directory exists, and create it if it doesn't
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path)
+
+            # Define the file path
+            wav_file_path = f"{directory_path}/clip_{int(time.time())}.wav"
+
+            # Write the audio data to the file
+            sf.write(wav_file_path, audio_in[:num_samples], sample_rate, subtype='PCM_16')
+
+            # Remove the saved portion from the buffer
+            audio_in = audio_in[num_samples:]
+
 
     def on_disconnect_clicked(self, button):
         self.stop_event.set()
