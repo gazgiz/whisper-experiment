@@ -97,7 +97,7 @@ class LiveKitApp(Gtk.Application):
         self.status_label = Gtk.Label(label="Disconnected")
         box.append(self.status_label)
 
-       # Chat Messages View
+        # Chat Messages View
         chat_label = Gtk.Label(label="Chat Messages:")
         box.append(chat_label)
         self.chat_view = Gtk.TextView()
@@ -115,7 +115,6 @@ class LiveKitApp(Gtk.Application):
         self.load_last_config()
 
         self.window.show()
-
 
     def on_text_inserted(self, buffer, iter, text, length):
         GLib.idle_add(self.scroll_to_end)
@@ -359,6 +358,7 @@ if __name__ == "__main__":
         }
         .disconnected {
             color: black;
+        }
         """
         css_provider = Gtk.CssProvider()
         css_provider.load_from_data(css.encode())
