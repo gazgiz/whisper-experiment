@@ -173,7 +173,7 @@ class LiveKitApp(Gtk.Application):
         self.tasks.append(task)
 
 
-    async def play_audio(self, track):
+    async def play_audio(self, audio_stream):
         p = pyaudio.PyAudio()
 
         # Open stream for playback
@@ -185,20 +185,18 @@ class LiveKitApp(Gtk.Application):
 
         logging.info("Audio playback stream opened")
 
-        def on_audio_frame(frame):
-            audio_data = np.frombuffer(frame.data, dtype=np.int16)
-            logging.info(f"Received audio frame with {len(audio_data)} samples")
-            # Optional: Log the first few samples for debugging
-            logging.debug(f"Audio data: {audio_data[:10]}")
-            self.record_audio_clip(audio_data / 32768.0)
-            stream.write(audio_data)
-            logging.info("Audio data written to playback stream")
-
-        track.on("audio_frame", on_audio_frame)
-
         try:
-            while not self.stop_event.is_set():
-                await asyncio.sleep(0.1)
+            async for frame_event in audio_stream:
+                frame = frame_event.frame
+                audio_data = np.frombuffer(frame.data, dtype=np.int16)
+                #logging.info(f"Received audio frame with {len(audio_data)} samples")
+                # Optional: Log the first few samples for debugging
+                #logging.debug(f"Audio data: {audio_data[:10]}")
+                #self.record_audio_clip(audio_data / 32768.0)
+                stream.write(audio_data.tobytes())
+                #logging.info("Audio data written to playback stream")
+
+
         except asyncio.CancelledError:
             logging.info("play_audio cancelled")
         except Exception as e:
@@ -224,8 +222,9 @@ class LiveKitApp(Gtk.Application):
             logging.info("Track subscribed: %s", publication.sid)
             if track.kind == rtc.TrackKind.KIND_AUDIO:
                 logging.info("Audio track received: %s", track.sid)
+                _audio_stream = rtc.AudioStream(track)
                 task = asyncio.run_coroutine_threadsafe(
-                    self.play_audio(track), self.loop
+                    self.play_audio(_audio_stream), self.loop
                 )
                 self.tasks.append(task)
 
