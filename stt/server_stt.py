@@ -174,8 +174,9 @@ def transcribe(clip_buffer):
             return
         print(f"{transcript}")
 
-        lang, confidence = detect_language(transcript)
-        logging.info(f"Language {lang}, confidence {confidence}")
+        # disable
+        #lang, confidence = detect_language(transcript)
+        #logging.info(f"Language {lang}, confidence {confidence}")
 
         if chat_manager:
             # Send transcript to chat manager
@@ -269,6 +270,9 @@ def main_livekit():
     event_loop.run_forever()
 
 def main_gst_loop():
+     # 0 = none, 1 = ERROR, 2 = WARNING, 3 = INFO, 4 = DEBUG, 5 = LOG
+    os.environ["GST_DEBUG"] = "0"
+
     Gst.init(None)
     start_pipeline()
     glib_loop = GLib.MainLoop()

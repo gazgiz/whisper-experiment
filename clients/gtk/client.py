@@ -231,6 +231,7 @@ class LiveKitApp(Gtk.Application):
         try:
             await self.livekit_room.connect(url, token)
             logging.info(f"Connected to LiveKit room: {self.livekit_room.name}")
+            logging.info("remote participants: %s", self.livekit_room.remote_participants)
             self.update_status("Connected", "red")
 
             # Set the disconnect button as the default widget
