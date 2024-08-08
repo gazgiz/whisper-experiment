@@ -253,6 +253,20 @@ def on_handoff(fakesink, buffer, pad):
         logging.error("Error in on_handoff", exc_info=True)
     return Gst.FlowReturn.OK
 
+def main_gst_loop():
+     # 0 = none, 1 = ERROR, 2 = WARNING, 3 = INFO, 4 = DEBUG, 5 = LOG
+    os.environ["GST_DEBUG"] = "livekit:6,webrtcsrc:6"
+
+    Gst.init(None)
+    start_pipeline()
+    glib_loop = GLib.MainLoop()
+    try:
+        glib_loop.run()
+    except KeyboardInterrupt:
+        pass
+
+    pipeline.set_state(Gst.State.NULL)
+
 def main_livekit():
     global event_loop
     asyncio.set_event_loop(asyncio.new_event_loop())
@@ -269,19 +283,6 @@ def main_livekit():
 
     event_loop.run_forever()
 
-def main_gst_loop():
-     # 0 = none, 1 = ERROR, 2 = WARNING, 3 = INFO, 4 = DEBUG, 5 = LOG
-    os.environ["GST_DEBUG"] = "0"
-
-    Gst.init(None)
-    start_pipeline()
-    glib_loop = GLib.MainLoop()
-    try:
-        glib_loop.run()
-    except KeyboardInterrupt:
-        pass
-
-    pipeline.set_state(Gst.State.NULL)
 
 if __name__ == "__main__":
     logging.basicConfig(
