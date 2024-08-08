@@ -150,11 +150,6 @@ async def main():
     logging.info("connected to room %s", room.name)
     logging.info("remote participants: %s", room.remote_participants)
 
-    global source
-    # Create the audio source and track
-    source = rtc.AudioSource(WEBRTC_SAMPLE_RATE, NUM_CHANNELS)
-    local_audio_track = rtc.LocalAudioTrack.create_audio_track("tts-audio", source)
-
     # Initialize ChatManager to receive messages
     chat_manager = rtc.ChatManager(room)
 
