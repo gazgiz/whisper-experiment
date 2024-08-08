@@ -131,7 +131,8 @@ def on_message(bus, message):
         logging.warning(f"Warning: {err}, {debug}")
 
 def main_gst_loop():
-    os.environ["GST_DEBUG"] = "3,livekit:6,webrtcsrc:6"
+    #os.environ["GST_DEBUG"] = "3,livekit:6,webrtcsrc:6"
+    os.environ["GST_DEBUG"] = "0"
 
     start_pipeline()
     glib_loop = GLib.MainLoop()

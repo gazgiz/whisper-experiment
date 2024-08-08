@@ -255,7 +255,8 @@ def on_handoff(fakesink, buffer, pad):
 
 def main_gst_loop():
      # 0 = none, 1 = ERROR, 2 = WARNING, 3 = INFO, 4 = DEBUG, 5 = LOG
-    os.environ["GST_DEBUG"] = "livekit:6,webrtcsrc:6"
+    #os.environ["GST_DEBUG"] = "livekit:6,webrtcsrc:6"
+    os.environ["GST_DEBUG"] = "0"
 
     Gst.init(None)
     start_pipeline()
