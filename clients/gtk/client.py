@@ -1,16 +1,18 @@
+import os
+import json
+import sys
+import time
 import gi
-gi.require_version("Gtk", "4.0")
-from gi.repository import Gtk, Gdk, GLib
 import asyncio
 import threading
 import logging
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
 from livekit import rtc
 import numpy as np
 import pyaudio
 import soundfile as sf
-import os
-import json
-import sys
+
 
 SAMPLE_RATE_MIC = 16000  # Microphone standard sample rate
 SAMPLE_RATE_WEBRTC = 48000  # WebRTC sample rate
@@ -25,6 +27,7 @@ class LiveKitApp(Gtk.Application):
 
     def __init__(self):
         super().__init__(application_id="com.example.LiveKitApp")
+        self.audio_in = np.array([])
         self.connect("activate", self.on_activate)
         self.livekit_room = None
         self.local_audio_track = None
@@ -173,6 +176,7 @@ class LiveKitApp(Gtk.Application):
         self.tasks.append(task)
 
 
+
     async def play_audio(self, audio_stream):
         p = pyaudio.PyAudio()
 
@@ -209,6 +213,40 @@ class LiveKitApp(Gtk.Application):
                 p.terminate()
             except Exception as e:
                 logging.error(f"Exception during stream close: {e}")
+
+    def record_audio_clip(self, record_data, sample_rate=SAMPLE_RATE_MIC, clip_duration=5):
+        """
+        Accumulates audio data until a 5-second clip is available and saves it to the 'client_audio_segments' directory.
+
+        Parameters:
+        audio_data (numpy.ndarray): The audio data to record.
+        sample_rate (int): The sample rate of the audio data.
+        clip_duration (int): The duration of the clip in seconds (default is 5 seconds).
+        """
+        # Calculate the number of samples needed for the desired clip duration
+        num_samples = clip_duration * sample_rate
+
+        # Append the new audio data to the buffer
+        self.audio_in = np.append(self.audio_in, record_data)
+
+        # Check if the buffer has enough samples for a full clip
+        if len(self.audio_in) >= num_samples:
+            # Define the directory path
+            directory_path = "client_audio_segments"
+            if not os.path.exists(directory_path):
+                os.makedirs(directory_path)
+
+            # Define the file path using the current timestamp to ensure uniqueness
+            wav_file_path = f"{directory_path}/clip_{int(time.time())}.wav"
+
+            # Write the audio data to the file, ensuring proper format
+            sf.write(wav_file_path, self.audio_in[:num_samples], sample_rate, subtype='PCM_16')
+
+            # Remove the saved portion from the buffer
+            self.audio_in = self.audio_in[num_samples:]
+
+            logging.info(f"Audio clip saved: {wav_file_path}")
+
 
     async def join_room(self, url, token, room_name):
         self.livekit_room = rtc.Room()
@@ -286,6 +324,7 @@ class LiveKitApp(Gtk.Application):
                 mic_data = stream.read(CHUNK_SIZE)
                 #logging.info(f"Read {len(mic_data)} bytes from microphone")
                 np.copyto(audio_data, np.frombuffer(mic_data, dtype=np.int16))
+                #self.record_audio_clip(audio_data / 32768.0)
                 await source.capture_frame(audio_frame)
                 logging.debug("Captured audio frame from microphone")
         except asyncio.CancelledError:
@@ -300,45 +339,6 @@ class LiveKitApp(Gtk.Application):
                 p.terminate()
             except Exception as e:
                 logging.error(f"Exception during stream close: {e}")
-
-    # Initialize a buffer to accumulate audio data
-    audio_in = np.array([])
-
-    def record_audio_clip(audio_data, sample_rate=SAMPLE_RATE_WEBRTC, clip_duration=5):
-        """
-        Accumulates audio data until a 5-second clip is available and saves it to the 'audio_segments' directory.
-
-        Parameters:
-        audio_data (numpy.ndarray): The audio data to record.
-        sample_rate (int): The sample rate of the audio data.
-        clip_duration (int): The duration of the clip in seconds (default is 5 seconds).
-        """
-        global audio_in
-
-        # Calculate the number of samples for the given duration
-        num_samples = clip_duration * sample_rate
-
-        # Append the new audio data to the buffer
-        audio_in = np.append(audio_in, audio_data)
-
-        # Check if the buffer has enough samples for a 5-second clip
-        if len(audio_in) >= num_samples:
-            # Define the directory path
-            directory_path = "client_audio_segments"
-
-            # Check if the directory exists, and create it if it doesn't
-            if not os.path.exists(directory_path):
-                os.makedirs(directory_path)
-
-            # Define the file path
-            wav_file_path = f"{directory_path}/clip_{int(time.time())}.wav"
-
-            # Write the audio data to the file
-            sf.write(wav_file_path, audio_in[:num_samples], sample_rate, subtype='PCM_16')
-
-            # Remove the saved portion from the buffer
-            audio_in = audio_in[num_samples:]
-
 
     def on_disconnect_clicked(self, button):
         self.stop_event.set()
