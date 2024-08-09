@@ -204,7 +204,7 @@ def start_pipeline():
         f"signaller::room-name={room_name} "
         f"signaller::identity={system_user_name} "
         f"signaller::participant-name={system_user_name} "
-        f"src. ! queue ! audioconvert ! audio/x-raw,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
+        f"src. ! queue ! audioconvert ! audio/x-raw,format=S16LE,channels=1,rate={STT_SAMPLE_RATE} ! fakesink name=fakesink-1 sync=true signal-handoffs=true"
     )
 
     fakesink = pipeline.get_by_name("fakesink-1")
