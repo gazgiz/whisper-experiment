@@ -1,0 +1,1 @@
+This repository serves as a demonstration of the implementation of STT and TTS using GStreamer and WebRTC.  The internal code is intended for reference purposes only, as it does not include the necessary credential information for WebRTC access. Therefore, a distinct setup is necessary for operation.
